@@ -1,57 +1,70 @@
 # agent-orchestrator
 
-Production-grade multi-agent orchestration with intelligent model routing, persistent memory, and prompt injection defense.
+Multi-agent orchestration with intelligent model routing, two-layer persistent memory, and prompt injection defense.
 
 ---
 
 ## The core idea
 
-Most multi-agent systems pick one model and use it for everything. That works until it doesn't. Different tasks have different optimal models:
+Most agent systems use one model for everything and one storage method for memory. Both choices compound over time into systems that are slow, expensive, and forgetful in the wrong ways.
 
-| Task type | Best model (as of 2025) | Why |
-|-----------|------------------------|-----|
-| Code / debugging / scripts | GPT-5.4 Pro | SWE-bench leader |
-| Structured reasoning / agentic tasks | Gemini 3.1 Pro | GPQA 94.3%, APEX 33.5% |
-| Real-time data / news | Grok | Live search access |
-| Long-form synthesis / writing | Claude Opus | 200K context, nuanced output |
-| Fast classification / triage | Claude Haiku / Gemini Flash | Cost-efficient |
+This library implements three patterns that address that:
 
-This library implements the orchestrator pattern: a primary reasoning model routes tasks to specialized sub-agents rather than handling everything directly. The orchestrator thinks and delegates. Sub-agents execute.
+**1. Route by task type, not by default.** Different tasks have different optimal models:
+
+| Task | Recommended model class | Why |
+|------|------------------------|-----|
+| Code / debugging / scripts | GPT-5.4 Pro class | SWE-bench leader |
+| Structured reasoning / agentic | Gemini 3.1 Pro class | GPQA 94.3%, APEX 33.5% |
+| Long-form synthesis / writing | Claude Opus class | Nuanced output, long context |
+| Real-time data / news | Live-search models | Access to current information |
+| Fast classification / triage | Haiku / Flash class | Cost-efficient |
+| Local / private workloads | LM Studio (local) | No data leaves the machine |
+
+**2. Two-layer memory.** File-based memory for structured facts and active context. Vector-based memory (LanceDB) for semantic search across all prior sessions — the "what did we decide about X six weeks ago?" queries that keyword search cannot answer.
+
+**3. Screen everything.** External content — web pages, emails, tool outputs, user-pasted text — can contain instructions designed to hijack agent behavior. Filter before processing.
 
 ---
 
 ## Architecture
 
 ```
-                    ┌──────────────────────────────┐
-                    │         Orchestrator          │
-                    │   [Gemini 3.1 Pro — primary]  │
-                    │                               │
-                    │  screen → recall → route      │
-                    │  → execute → persist          │
-                    └────┬──────────┬──────────┬────┘
-                         │          │          │
-              ┌──────────▼─┐  ┌─────▼──────┐  ┌▼────────────┐
-              │ coding-agent│  │research-   │  │ direct LLM  │
-              │ [GPT-5.4]  │  │ agent      │  │ fallback    │
-              │             │  │ [Grok]     │  │             │
-              └─────────────┘  └────────────┘  └─────────────┘
-                         │          │          │
-                    ┌────▼──────────▼──────────▼────┐
-                    │         MemoryManager          │
-                    │  MEMORY.md (lean index)        │
-                    │  memory/<topic>.md (deep)      │
-                    │  active-context.md (rolling)   │
-                    └────────────────────────────────┘
+ User / trigger
+      │
+      ▼
+ ┌─────────────────────────────────────────────────────────────┐
+ │                      Orchestrator                            │
+ │            (primary reasoning model — your choice)           │
+ │                                                              │
+ │  1. Screen for prompt injection                              │
+ │  2. Recall: file layer + semantic query                      │
+ │  3. Route task to appropriate model / agent                  │
+ │  4. Execute via sub-agent or direct LLM call                 │
+ │  5. Persist result to memory                                 │
+ └────────────┬──────────────┬──────────────┬──────────────────┘
+              │              │              │
+     ┌────────▼──┐   ┌───────▼───┐   ┌─────▼───────┐
+     │  Coding   │   │  Research │   │  Reasoning  │
+     │  Agent    │   │  Agent    │   │  Agent      │
+     │ [GPT-5.4] │   │ [Grok /   │   │ [Opus /     │
+     │           │   │  Search]  │   │  Gemini]    │
+     └───────────┘   └───────────┘   └─────────────┘
+              │              │              │
+     ┌────────▼──────────────▼──────────────▼──────────────────┐
+     │                     Memory Stack                          │
+     │                                                           │
+     │  File layer (MemoryManager)                               │
+     │    MEMORY.md         ← lean index, loaded every session   │
+     │    memory/<topic>.md ← deep topic files, loaded on demand │
+     │    active-context.md ← rolling 7-day state                │
+     │                                                           │
+     │  Vector layer (SemanticMemory + LanceDB)                  │
+     │    Ingestion: LLM extracts facts → embed → store          │
+     │    Recall:   query → embed → cosine similarity → top-k    │
+     │    Model:    text-embedding-3-small or local (LM Studio)  │
+     └───────────────────────────────────────────────────────────┘
 ```
-
-**Execution flow for every task:**
-
-1. **Screen** incoming content for prompt injection signals
-2. **Recall** relevant memory from structured files
-3. **Route** to the right model/agent based on task type
-4. **Execute** via the selected model or registered sub-agent
-5. **Persist** result to memory for future sessions
 
 ---
 
@@ -61,12 +74,19 @@ This library implements the orchestrator pattern: a primary reasoning model rout
 pip install agent-orchestrator
 ```
 
-Connect your LLM provider (the library has no hard dependencies on any specific one):
+Add optional dependencies based on your stack:
 
 ```bash
-pip install "agent-orchestrator[litellm]"    # multi-provider via litellm
-pip install "agent-orchestrator[anthropic]"  # Claude only
-pip install "agent-orchestrator[openai]"     # OpenAI only
+# LLM providers (pick one or more)
+pip install "agent-orchestrator[litellm]"     # route to any provider
+pip install "agent-orchestrator[anthropic]"   # Claude only
+pip install "agent-orchestrator[openai]"      # OpenAI / compatible APIs
+
+# Semantic memory (LanceDB vector store)
+pip install "agent-orchestrator[lancedb]"
+
+# Everything
+pip install "agent-orchestrator[all]"
 ```
 
 ---
@@ -77,127 +97,217 @@ pip install "agent-orchestrator[openai]"     # OpenAI only
 import litellm
 from agent_orchestrator import Orchestrator
 
-# 1. Create the orchestrator
 orch = Orchestrator(
-    primary_model="google/gemini-3.1-pro-preview",
+    primary_model="anthropic/claude-opus-4-6",   # or any model you prefer
     memory_dir="./memory",
 )
 
-# 2. Connect a real LLM caller (any provider via litellm)
+# Connect your LLM provider
 orch.set_llm_caller(
     lambda prompt, model: litellm.completion(
         model=model,
-        messages=[{"role": "user", "content": prompt}]
+        messages=[{"role": "user", "content": prompt}],
     ).choices[0].message.content
 )
 
-# 3. Register specialized sub-agents
+# Register specialized sub-agents
 def coding_agent(task: str, model: str) -> str:
     return litellm.completion(
         model=model,
         messages=[
-            {"role": "system", "content": "You are a senior software engineer. Return clean, working code only."},
+            {"role": "system", "content": "You are a senior engineer. Return clean, tested code only."},
             {"role": "user", "content": task},
-        ]
+        ],
     ).choices[0].message.content
 
 orch.register_agent("coding-agent", coding_agent)
 
-# 4. Run tasks — routing is automatic
-result = orch.run("Write a Python function to safely parse nested JSON")
-# Automatically routes to coding-agent → GPT-5.4 Pro
+# Task routing is automatic
+result = orch.run("Write a Python function to parse nested JSON safely")
+# routes to coding-agent → GPT-5.4 Pro class
 
-result = orch.run("Compare RAG vs fine-tuning for domain-specific QA systems")
-# Automatically routes to primary model → Gemini 3.1 Pro
+result = orch.run("Analyze the tradeoffs between RAG and fine-tuning for domain QA")
+# routes to primary model with relevant memory as context
 ```
 
 ---
 
-## Task routing
+## Model routing
 
-The `TaskRouter` classifies tasks using keyword signals and routes them to the right model. No LLM call required for routing — it's O(1).
+The `TaskRouter` classifies tasks using keyword signals and routes to the configured model. No LLM call required — runs in microseconds.
 
 ```python
 from agent_orchestrator import TaskRouter
 
 router = TaskRouter()
 
-decision = router.route("Debug this Python async deadlock")
+decision = router.route("Debug this async deadlock in Python")
 print(decision.task_type)    # TaskType.CODE
 print(decision.model)        # openai/gpt-5.4-pro
 print(decision.confidence)   # 0.87
 print(decision.rationale)    # "Code tasks routed to GPT-5.4 Pro (top SWE-bench score)"
 ```
 
-Override the model map to fit your stack:
+Override the model map to match your stack:
 
 ```python
 from agent_orchestrator import TaskRouter, TaskType
 
 router = TaskRouter(model_map={
-    TaskType.CODE: "anthropic/claude-opus-4-6",       # prefer Claude for code
-    TaskType.REASONING: "openai/gpt-5.4-pro",          # prefer GPT for reasoning
+    TaskType.CODE: "openai/gpt-5.4-pro",
+    TaskType.REASONING: "google/gemini-3.1-pro-preview",
     TaskType.RESEARCH: "x-ai/grok-4-1",
-    TaskType.WRITING: "google/gemini-3.1-pro-preview",
+    TaskType.WRITING: "anthropic/claude-opus-4-6",
+    TaskType.TRIAGE: "anthropic/claude-haiku-4-5",
     TaskType.UNKNOWN: "anthropic/claude-sonnet-4-6",
 })
 ```
 
+**Using local models via LM Studio:**
+
+LM Studio exposes a local OpenAI-compatible endpoint. Route privacy-sensitive or offline tasks there:
+
+```python
+import openai
+
+local_client = openai.OpenAI(
+    base_url="http://localhost:1234/v1",
+    api_key="lm-studio",   # not validated by LM Studio
+)
+
+def local_agent(task: str, model: str) -> str:
+    return local_client.chat.completions.create(
+        model=model,        # e.g. "meta-llama-3.1-8b-instruct"
+        messages=[{"role": "user", "content": task}],
+    ).choices[0].message.content
+
+orch.register_agent("local-agent", local_agent)
+```
+
 ---
 
-## Persistent memory
+## Two-layer memory
 
-Agents are stateless by default. Memory makes them persistent.
+### File layer (structured)
+
+Fast, deterministic, good for known categories of information:
 
 ```python
 from agent_orchestrator import MemoryManager
 
 mem = MemoryManager("./memory")
 
-# Write to topic files
-mem.write("project-alpha", "Completed API design phase. Next: implementation sprint.")
-mem.write("user-preferences", "Prefers concise responses. No em dashes. Sentence case.")
+mem.write("project-alpha", "API design phase complete. Implementation sprint starts Monday.")
+mem.write("preferences", "Prefers concise responses. No filler phrases. Sentence case.")
+mem.update_active_context("Closed issue #142 — token expiry bug fixed.")
 
-# Update the rolling active context (last 7 days)
-mem.update_active_context("Closed GitHub issue #142 — auth token expiry bug")
-
-# Recall on next session
-context = mem.recall("project-alpha")  # returns relevant topic files
+# Keyword-based recall (loads matching topic files)
+context = mem.recall("project-alpha preferences")
 ```
 
-**Memory file layout:**
+File layout:
 
 ```
 memory/
-├── MEMORY.md            # lean index (auto-kept under 200 lines)
-├── active-context.md    # rolling 7-day state
-├── project-alpha.md     # topic file (auto-created)
-├── user-preferences.md  # topic file
-└── archive/             # files older than 30 days (auto-archived)
+├── MEMORY.md            ← lean index (auto-kept under 200 lines)
+├── active-context.md    ← rolling 7-day state
+├── project-alpha.md     ← topic file (auto-created)
+├── preferences.md
+└── archive/             ← files older than 30 days (auto-archived)
 ```
 
-**Auto-compaction:** any section in `MEMORY.md` that grows past 30 lines is automatically split into a dedicated topic file with a one-line pointer. This keeps the index scannable.
+Sections in `MEMORY.md` that exceed 30 lines are automatically split into dedicated topic files with a one-line pointer:
 
 ```python
 splits = mem.compact()
-# ["## Meeting Notes", "## Project History"]  # sections that were split out
+# ["## Meeting Notes", "## Job Search Log"]  ← sections moved out
+```
+
+### Vector layer (semantic)
+
+For queries that don't map cleanly to keywords:
+
+```python
+from agent_orchestrator import SemanticMemory, EXTRACTION_PROMPT
+import openai
+
+client = openai.OpenAI()
+
+def embed(texts: list[str]) -> list[list[float]]:
+    resp = client.embeddings.create(model="text-embedding-3-small", input=texts)
+    return [r.embedding for r in resp.data]
+
+def extract(transcript: str) -> list[dict]:
+    import json
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(transcript=transcript)}],
+        response_format={"type": "json_object"},
+    )
+    return json.loads(resp.choices[0].message.content)
+
+sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=embed, agent_id="main")
+
+# Ingest a session: LLM extracts facts → embed → store in LanceDB
+sem.ingest_session("2026-03-09", transcript_text, extract_fn=extract)
+
+# Semantic search across all prior sessions
+results = sem.query("decisions about storage architecture")
+context = sem.format_for_context(results)   # ready to inject into LLM prompt
+```
+
+The extraction step is important. Raw session transcripts are too noisy to embed directly. A small, cheap LLM (GPT-4o-mini, Claude Haiku) extracts only the durable facts first. Quality of semantic recall depends heavily on quality of extraction.
+
+What gets extracted:
+- Decisions made and why
+- User preferences and communication style
+- Facts about current projects, skills, constraints
+- Named entities: people, organizations, tools
+- Project state: what is complete, what is in progress
+
+**Using local embeddings via LM Studio:**
+
+```python
+local_client = openai.OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
+
+def local_embed(texts: list[str]) -> list[list[float]]:
+    resp = local_client.embeddings.create(
+        model="nomic-embed-text",   # or whichever embedding model is loaded
+        input=texts,
+    )
+    return [r.embedding for r in resp.data]
+
+sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=local_embed)
+```
+
+### Combining both layers
+
+```python
+# File layer: fast keyword recall
+file_context = mem.recall(task)
+
+# Vector layer: semantic recall from all prior sessions
+semantic_results = sem.query(task, top_k=5)
+semantic_context = sem.format_for_context(semantic_results)
+
+# Both injected into the prompt before the LLM call
+full_context = f"{file_context}\n\n{semantic_context}"
 ```
 
 ---
 
 ## Prompt injection defense
 
-External content — web pages, emails, search results, user-pasted text — can contain instructions designed to hijack agent behavior. The `ContentFilter` screens content before the orchestrator processes it.
+The `ContentFilter` screens external content before the orchestrator processes it.
 
 ```python
 from agent_orchestrator import ContentFilter
 
-cf = ContentFilter(strict_mode=False)  # strict_mode=True blocks MEDIUM-risk too
+cf = ContentFilter(strict_mode=False)
 
-# Screen any external content
-result = cf.screen(webpage_content, source="web-search")
+result = cf.screen(web_page_content, source="web-search")
 if not result.safe_to_process:
-    log_alert(result.recommendation)
+    alert(result.recommendation)
     return
 
 # Screen tool outputs specifically
@@ -215,68 +325,17 @@ Risk levels:
 
 ---
 
-## Full example: research assistant agent
-
-```python
-import litellm
-from agent_orchestrator import Orchestrator, ContentFilter
-
-cf = ContentFilter()
-
-def make_llm(system_prompt: str):
-    def call(task: str, model: str) -> str:
-        return litellm.completion(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": task},
-            ]
-        ).choices[0].message.content
-    return call
-
-orch = Orchestrator(
-    primary_model="google/gemini-3.1-pro-preview",
-    memory_dir="./memory",
-    strict_security=False,
-)
-
-orch.set_llm_caller(make_llm("You are a helpful research assistant."))
-
-orch.register_agent(
-    "coding-agent",
-    make_llm("You are a senior engineer. Return clean, tested code only.")
-)
-orch.register_agent(
-    "research-agent",
-    make_llm("You search for and synthesize current information accurately.")
-)
-
-# Memory persists across sessions — agents remember prior context
-results = orch.run_batch([
-    "What are the latest FDA approvals for AI diagnostic tools in 2025?",
-    "Write a Python script to fetch and parse FDA 510(k) approval data from their API",
-    "Summarize the regulatory landscape and what it means for AI medical device startups",
-])
-
-for r in results:
-    print(f"[{r.routing.task_type.value}] → {r.routing.model}")
-    print(r.output[:200])
-    print()
-```
-
----
-
 ## Design principles
 
-**The orchestrator never does grunt work.** It classifies, delegates, and synthesizes. If a task takes more than a few seconds or returns more than a few KB of data, it should be a sub-agent task.
+**The orchestrator delegates, not executes.** If a task takes more than a few seconds or returns more than a few KB, it should be a sub-agent task. The primary model thinks, routes, and synthesizes.
 
-**Different models for different jobs.** Using one model for everything is the easiest path and almost never the best one. Route based on benchmark evidence, not brand loyalty.
+**Memory has two jobs.** File memory is fast and structured, good for known categories. Semantic memory is fuzzy and cross-session, good for open-ended recall. The two-layer approach uses each where it is strongest.
 
-**Memory is an index, not a log.** Keep `MEMORY.md` scannable. Deep detail lives in topic files, loaded on demand. Sessions end; memory persists.
+**Keyword search and vector search are complementary.** Keyword search is more precise when you know what category to look in. Vector search is better when you don't. Run both.
 
-**External content is untrusted by default.** Prompt injection via tool outputs, search results, and user-pasted text is a real attack vector. Filter before processing.
+**Local models for local work.** Not every task needs a frontier model. LM Studio makes it easy to run embedding models and smaller LLMs locally with zero data leaving the machine.
 
-**Fallbacks, not retries.** When the primary model fails, fall back to the next best model once. Retrying the same model in a loop just burns tokens and time.
+**External content is untrusted.** Prompt injection through search results, email content, and tool outputs is an active attack vector. Filter before processing.
 
 ---
 
@@ -287,25 +346,28 @@ git clone https://github.com/BryanTegomoh/agent-orchestrator
 cd agent-orchestrator
 pip install -e ".[dev]"
 
-# See routing decisions without any API calls
+# Task routing (no API keys needed)
 python examples/basic_routing.py
 
-# See the security filter in action
+# Security filter (no API keys needed)
 python examples/security_screening.py
 
-# See memory persistence and compaction
+# File-based memory and compaction (no API keys needed)
 python examples/memory_management.py
+
+# Semantic memory with stub embeddings (no API keys needed)
+python examples/semantic_search.py
 ```
 
 ---
 
-## Running tests
+## Tests
 
 ```bash
-pytest                          # all tests
-pytest tests/test_router.py     # routing tests only
-pytest tests/test_security.py   # security tests only
-pytest --cov=agent_orchestrator # with coverage
+pytest                           # all tests
+pytest tests/test_router.py      # routing only
+pytest tests/test_security.py    # security filter only
+pytest --cov=agent_orchestrator  # with coverage
 ```
 
 ---

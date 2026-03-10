@@ -4,18 +4,29 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-orchestrator"
-version = "0.1.0"
-description = "Production-grade multi-agent orchestration with intelligent model routing"
+version = "0.2.0"
+description = "Multi-agent orchestration with model routing, semantic memory, and prompt injection defense"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
 dependencies = []
 
 [project.optional-dependencies]
-# Install these to connect real LLMs
+# LLM providers
 litellm = ["litellm>=1.40.0"]
 anthropic = ["anthropic>=0.40.0"]
 openai = ["openai>=1.50.0"]
+# Semantic memory (vector store)
+lancedb = ["lancedb>=0.6.0", "pyarrow>=16.0", "numpy>=1.26"]
+# Full stack (everything)
+all = [
+    "litellm>=1.40.0",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "lancedb>=0.6.0",
+    "pyarrow>=16.0",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
