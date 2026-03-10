@@ -75,7 +75,7 @@ class TaskRouter:
     to self-classify before routing.
     """
 
-    def __init__(self, model_map: dict[str, str] | None = None):
+    def __init__(self, model_map: dict[TaskType, str] | None = None):
         self.model_map = model_map or {
             TaskType.CODE: "openai/gpt-5.4-pro",
             TaskType.REASONING: "google/gemini-3.1-pro-preview-customtools",

@@ -51,3 +51,9 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# semantic_memory uses lazily-imported optional dependencies (lancedb, pyarrow)
+# that are not installed in the base dev environment. Ignore that module only.
+[[tool.mypy.overrides]]
+module = "agent_orchestrator.semantic_memory"
+ignore_errors = true
