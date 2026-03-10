@@ -24,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from .memory import MemoryManager
-from .router import RoutingDecision, TaskRouter
+from .router import RoutingDecision, TaskRouter, TaskType
 from .security import ContentFilter
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class Orchestrator:
         primary_model: str,
         memory_dir: str = "./memory",
         strict_security: bool = False,
-        model_map: dict[str, str] | None = None,
+        model_map: dict[TaskType, str] | None = None,
     ):
         self.primary_model = primary_model
         self.router = TaskRouter(model_map=model_map)
