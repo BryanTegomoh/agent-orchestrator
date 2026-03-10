@@ -2,11 +2,11 @@
 agent-orchestrator: Production-grade multi-agent orchestration with intelligent model routing.
 """
 
+from .memory import MemoryManager
 from .orchestrator import Orchestrator
 from .router import TaskRouter, TaskType
-from .memory import MemoryManager
 from .security import ContentFilter
-from .semantic_memory import SemanticMemory, MemoryFragment, RecallResult, EXTRACTION_PROMPT
+from .semantic_memory import EXTRACTION_PROMPT, MemoryFragment, RecallResult, SemanticMemory
 
 __all__ = [
     "Orchestrator",

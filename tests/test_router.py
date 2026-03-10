@@ -1,6 +1,7 @@
 """Tests for the task router."""
 
 import pytest
+
 from agent_orchestrator.router import TaskRouter, TaskType
 
 

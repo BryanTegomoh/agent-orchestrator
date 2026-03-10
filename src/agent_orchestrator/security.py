@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class RiskLevel(Enum):
@@ -33,7 +32,7 @@ class FilterResult:
     matched_patterns: list[str]
     recommendation: str
     safe_to_process: bool
-    sanitized_content: Optional[str] = None
+    sanitized_content: str | None = None
 
 
 # ── Pattern banks ──────────────────────────────────────────────────────────────
@@ -43,10 +42,17 @@ class FilterResult:
 _CRITICAL_PATTERNS = [
     # Direct instruction override attempts
     re.compile(r"ignore (all )?(previous|prior|above|earlier) instructions?", re.IGNORECASE),
-    re.compile(r"disregard (your )?(previous|prior|system|all) (instructions?|rules?|guidelines?)", re.IGNORECASE),
+    re.compile(
+        r"disregard (your )?(previous|prior|system|all) (instructions?|rules?|guidelines?)",
+        re.IGNORECASE,
+    ),
     re.compile(r"you are now (a |an )?(different|new|other|jailbroken)", re.IGNORECASE),
     re.compile(r"forget (everything|all) (you were|you've been) told", re.IGNORECASE),
-    re.compile(r"(act|pretend|behave|respond) as (if you are|like you are|though you are) (a |an )?(DAN|evil|uncensored|unrestricted)", re.IGNORECASE),
+    re.compile(
+        r"(act|pretend|behave|respond) as (if you are|like you are|though you are)"
+        r" (a |an )?(DAN|evil|uncensored|unrestricted)",
+        re.IGNORECASE,
+    ),
     # Persona hijacking
     re.compile(r"your (new|true|real) (name|identity|persona|role) is", re.IGNORECASE),
     re.compile(r"from now on (you are|you will be|act as)", re.IGNORECASE),
@@ -65,7 +71,10 @@ _HIGH_PATTERNS = [
 
 _MEDIUM_PATTERNS = [
     re.compile(r"what (are|were) your instructions?", re.IGNORECASE),
-    re.compile(r"repeat (the|your) (system|original) (prompt|message|instructions?)", re.IGNORECASE),
+    re.compile(
+        r"repeat (the|your) (system|original) (prompt|message|instructions?)",
+        re.IGNORECASE,
+    ),
     re.compile(r"(jailbreak|jailbroken|DAN mode)", re.IGNORECASE),
     re.compile(r"hypothetically (speaking|if you (were|could))", re.IGNORECASE),
     re.compile(r"for (educational|research) purposes? only", re.IGNORECASE),
@@ -149,9 +158,16 @@ class ContentFilter:
     def _recommendation(self, risk: RiskLevel, source: str) -> str:
         return {
             RiskLevel.LOW: "Content is clean. Safe to process.",
-            RiskLevel.MEDIUM: f"Potential injection signal in content from '{source}'. Flag to operator.",
-            RiskLevel.HIGH: f"Injection attempt likely in content from '{source}'. Block and log.",
-            RiskLevel.CRITICAL: f"Active injection attempt in content from '{source}'. Block immediately, do not process.",
+            RiskLevel.MEDIUM: (
+                f"Potential injection signal in content from '{source}'. Flag to operator."
+            ),
+            RiskLevel.HIGH: (
+                f"Injection attempt likely in content from '{source}'. Block and log."
+            ),
+            RiskLevel.CRITICAL: (
+                f"Active injection attempt in content from '{source}'."
+                " Block immediately, do not process."
+            ),
         }[risk]
 
     def _sanitize(self, content: str) -> str:

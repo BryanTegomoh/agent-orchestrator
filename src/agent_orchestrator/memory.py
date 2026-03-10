@@ -15,8 +15,6 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 
 MAX_SECTION_LINES = 30
 ACTIVE_CONTEXT_DAYS = 7
@@ -63,7 +61,7 @@ class MemoryManager:
 
         return "\n\n---\n\n".join(results) if results else "No relevant memory found."
 
-    def write(self, topic: str, content: str, section: Optional[str] = None) -> Path:
+    def write(self, topic: str, content: str, section: str | None = None) -> Path:
         """
         Persist content to memory. Creates or updates a topic file.
         If section is provided, updates that section within MEMORY.md.
@@ -95,7 +93,7 @@ class MemoryManager:
 
         # Keep only recent entries (rolling window)
         cutoff = datetime.now().timestamp() - (ACTIVE_CONTEXT_DAYS * 86400)
-        recent = [l for l in lines if not self._is_expired(l, cutoff)]
+        recent = [ln for ln in lines if not self._is_expired(ln, cutoff)]
         self.active_context_file.write_text("".join(recent) + line)
 
     def compact(self) -> list[str]:
@@ -158,7 +156,8 @@ class MemoryManager:
         existing = self.index_file.read_text()
         header = f"## {section}"
         if header in existing:
-            pattern = re.compile(rf"^## {re.escape(section)}.+?(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+            flags = re.MULTILINE | re.DOTALL
+            pattern = re.compile(rf"^## {re.escape(section)}.+?(?=^## |\Z)", flags)
             updated = pattern.sub(f"{header}\n\n{content}\n\n", existing)
         else:
             updated = existing + f"\n{header}\n\n{content}\n\n"

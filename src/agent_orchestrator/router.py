@@ -15,9 +15,8 @@ Routing logic:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 
 class TaskType(Enum):
@@ -33,7 +32,7 @@ class TaskType(Enum):
 class RoutingDecision:
     task_type: TaskType
     model: str
-    agent: Optional[str]          # named sub-agent if applicable
+    agent: str | None          # named sub-agent if applicable
     rationale: str
     confidence: float             # 0.0 – 1.0
     fallback_model: str
@@ -122,7 +121,7 @@ class TaskRouter:
         confidence = min(best_score / total + 0.3, 1.0)  # floor at 30% for any match
         return best_type, round(confidence, 2)
 
-    def _agent_for(self, task_type: TaskType) -> Optional[str]:
+    def _agent_for(self, task_type: TaskType) -> str | None:
         return {
             TaskType.CODE: "coding-agent",
             TaskType.RESEARCH: "research-agent",

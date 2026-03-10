@@ -1,6 +1,7 @@
 """Tests for the content security filter."""
 
 import pytest
+
 from agent_orchestrator.security import ContentFilter, RiskLevel
 
 

@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from .memory import MemoryManager
-from .router import RoutingDecision, TaskRouter, TaskType
-from .security import ContentFilter, RiskLevel
+from .router import RoutingDecision, TaskRouter
+from .security import ContentFilter
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class TaskResult:
     duration_ms: int
     memory_written: bool = False
     injection_blocked: bool = False
-    error: Optional[str] = None
+    error: str | None = None
 
     @property
     def success(self) -> bool:
@@ -169,7 +169,7 @@ class Orchestrator:
 
     # ── Delegation helper ──────────────────────────────────────────────────────
 
-    def delegate(self, task: str, to_agent: str, model: Optional[str] = None) -> str:
+    def delegate(self, task: str, to_agent: str, model: str | None = None) -> str:
         """
         Explicitly delegate a task to a named agent, bypassing routing.
         Useful when the orchestrator makes a high-confidence routing decision

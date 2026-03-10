@@ -30,13 +30,13 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ class MemoryFragment:
     category: str           # fact | decision | preference | entity | context
     source_session: str
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-    embedding: Optional[list[float]] = None
+    embedding: list[float] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -107,7 +107,10 @@ class SemanticMemory:
         def extract(transcript: str) -> list[dict]:
             resp = openai.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[{"role": "user", "content": EXTRACTION_PROMPT.format(transcript=transcript)}],
+                messages=[{
+                    "role": "user",
+                    "content": EXTRACTION_PROMPT.format(transcript=transcript),
+                }],
                 response_format={"type": "json_object"},
             )
             return json.loads(resp.choices[0].message.content)
@@ -179,7 +182,9 @@ class SemanticMemory:
         logger.info("Ingested %d memory fragments from session %s", len(fragments), session_date)
         return fragments
 
-    def ingest_fact(self, content: str, category: str = "fact", metadata: dict | None = None) -> MemoryFragment:
+    def ingest_fact(
+        self, content: str, category: str = "fact", metadata: dict | None = None
+    ) -> MemoryFragment:
         """Ingest a single fact directly (no transcript, no LLM extraction)."""
         if not self.embed_fn:
             raise RuntimeError("embed_fn is required. See class docstring.")
@@ -223,7 +228,6 @@ class SemanticMemory:
             return []
 
         try:
-            import lancedb  # type: ignore[import]
             q = table.search(query_embedding).limit(top_k)
             if category_filter:
                 q = q.where(f"category = '{category_filter}'")
