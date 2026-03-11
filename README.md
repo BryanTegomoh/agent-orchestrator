@@ -339,6 +339,69 @@ Risk levels:
 
 ---
 
+## Production: memory backend health checks
+
+Memory backends (LanceDB, QMD, or any vector store) can silently fail in production. A broken index means agents lose semantic recall with no visible error. Implement health checks to catch this.
+
+**The pattern:** a scheduled script that verifies the memory backend is functional, repairs it if possible, and alerts if not.
+
+```bash
+#!/bin/bash
+# memory-healthcheck.sh — run on a schedule (cron, launchd, systemd timer)
+
+LANCEDB_PATH="./memory/lancedb"
+ALERT_ENDPOINT="https://your-webhook-or-api"
+
+# 1. Verify database exists and isn't corrupt
+if [ ! -d "$LANCEDB_PATH/memories.lance" ]; then
+  curl -s -X POST "$ALERT_ENDPOINT" -d '{"text":"Memory DB missing"}'
+  exit 1
+fi
+
+# 2. Run a test query (catches silent failures)
+python3 -c "
+import lancedb
+db = lancedb.connect('$LANCEDB_PATH')
+table = db.open_table('memories')
+assert len(table) > 0, 'Empty table'
+print(f'OK: {len(table)} records')
+" 2>&1 || {
+  curl -s -X POST "$ALERT_ENDPOINT" -d '{"text":"Memory DB query failed"}'
+  exit 1
+}
+
+# 3. Check freshness (optional: alert if no new entries in 48h)
+python3 -c "
+import lancedb, time
+db = lancedb.connect('$LANCEDB_PATH')
+table = db.open_table('memories')
+df = table.to_pandas()
+latest = df['timestamp'].max()
+age_hours = (time.time() - latest) / 3600
+if age_hours > 48:
+    print(f'WARN: latest entry is {age_hours:.0f}h old')
+    exit(2)
+print(f'Fresh: latest entry {age_hours:.1f}h ago')
+"
+```
+
+**Scheduling options by platform:**
+
+| Platform | Method | Example |
+|----------|--------|---------|
+| macOS | launchd plist | `StartInterval: 1800` (every 30 min) |
+| Linux | systemd timer | `OnUnitActiveSec=30min` |
+| Any | cron | `*/30 * * * * /path/to/memory-healthcheck.sh` |
+
+**Key principles:**
+- **Test with a real query**, not just file existence. A corrupt SQLite/Lance file passes `ls` but fails queries.
+- **Check freshness.** A stale index is functionally equivalent to a broken one.
+- **Alert, don't just log.** If the memory backend is down, agents are running blind. Use webhooks (Slack, Telegram, PagerDuty) for immediate notification.
+- **Lock against concurrent runs.** Health checks that overlap with embedding jobs can cause issues.
+- **Auto-rotate logs.** Health checks run frequently; unbounded logs fill disks.
+
+---
+
 ## Running the examples
 
 ```bash
