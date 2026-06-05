@@ -1,15 +1,24 @@
 """
-Prompt injection defense for multi-agent systems.
+Heuristic prompt-injection screening for multi-agent systems.
 
-Threat model: external content (web pages, emails, tool outputs, user-pasted text)
-may contain instructions designed to hijack the agent's behavior. This filter
-classifies incoming content before the orchestrator processes it.
+This is a first-pass heuristic filter, NOT a security boundary. It matches a
+bank of regular expressions against incoming content to catch common, lazy
+injection attempts (instruction-override phrases, fake system delimiters,
+prompt-exfiltration requests). It will not stop an adversary who obfuscates,
+paraphrases, encodes, or uses unicode look-alikes; a regex cannot. Treat a
+LOW result as "no obvious injection found," never as "this content is safe."
+
+Use it to cheaply triage untrusted content (web pages, emails, tool outputs,
+user-pasted text) before the orchestrator processes it, and pair it with the
+controls that actually contain injection: least-privilege tools,
+human-in-the-loop on high-impact actions, and gating on the model's proposed
+actions rather than its inputs.
 
 Risk levels:
-  LOW     - safe to process
-  MEDIUM  - flag to operator before processing
-  HIGH    - block, log, alert
-  CRITICAL - block immediately, do not process at all
+  LOW      - no obvious injection signal found
+  MEDIUM   - suspicious; flag to operator before processing
+  HIGH     - likely injection; block, log, alert
+  CRITICAL - active override attempt; block immediately
 """
 
 from __future__ import annotations
@@ -36,7 +45,7 @@ class FilterResult:
 
 
 # ── Pattern banks ──────────────────────────────────────────────────────────────
-# These are NOT exhaustive — the goal is catching common injection vectors,
+# These are NOT exhaustive; the goal is catching common injection vectors,
 # not building a complete adversarial NLP system.
 
 _CRITICAL_PATTERNS = [
@@ -84,8 +93,10 @@ _MEDIUM_PATTERNS = [
 
 class ContentFilter:
     """
-    Screens external content for prompt injection signals before the
-    orchestrator processes it.
+    Heuristic screen for prompt-injection signals in untrusted content.
+
+    A regex-based triage step, not a security boundary (see module docstring).
+    A LOW result means "no known pattern matched," not "safe."
 
     Usage:
         cf = ContentFilter()
@@ -138,7 +149,7 @@ class ContentFilter:
     def screen_tool_output(self, tool_name: str, output: str) -> FilterResult:
         """Screen output from an external tool (web search, browser, API call)."""
         result = self.screen(output, source=f"tool:{tool_name}")
-        # Tool outputs get slightly more scrutiny — add context to recommendation
+        # Tool outputs get slightly more scrutiny: add context to recommendation
         if result.risk_level != RiskLevel.LOW:
             result.recommendation = (
                 f"Tool '{tool_name}' returned potentially injected content. "

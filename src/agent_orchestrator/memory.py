@@ -2,7 +2,7 @@
 Persistent memory manager for multi-session agent continuity.
 
 Architecture:
-  - MEMORY.md        → lean index, loaded every session (kept under 200 lines)
+  - MEMORY.md        → lean index of pointers, loaded every session
   - memory/<topic>.md → deep topic files, loaded on demand
   - active-context.md → rolling 7-day state (what's in flight right now)
 

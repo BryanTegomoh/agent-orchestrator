@@ -4,12 +4,12 @@ Task router: classifies incoming tasks and routes them to the right model.
 Core philosophy: different models have different strengths. The orchestrator's
 job is to route intelligently, not to do everything itself.
 
-Routing logic:
-  - Code / debugging / scripts        → GPT-5.4 Pro (SWE-bench leader)
-  - Structured reasoning / agentic    → Gemini 3.1 Pro (GPQA + APEX leader)
-  - Real-time data / news             → Grok (live search)
-  - Long-form writing / synthesis     → Claude Opus (200K context)
-  - Fast classification / triage      → Haiku / Flash (cost-efficient)
+Routing logic (model identifiers are configurable; see model_map):
+  - Code / debugging / scripts        → a code-specialized model
+  - Structured reasoning / agentic    → a high-reasoning model
+  - Real-time data / news             → a model with live search access
+  - Long-form writing / synthesis     → a long-context model
+  - Fast classification / triage      → a small, cost-efficient model
 """
 
 from __future__ import annotations
@@ -76,15 +76,18 @@ class TaskRouter:
     """
 
     def __init__(self, model_map: dict[TaskType, str] | None = None):
+        # Illustrative defaults. Override model_map to match the providers and
+        # model versions you actually use. The routing logic is independent of
+        # any specific model.
         self.model_map = model_map or {
-            TaskType.CODE: "openai/gpt-5.4-pro",
-            TaskType.REASONING: "google/gemini-3.1-pro-preview-customtools",
-            TaskType.RESEARCH: "x-ai/grok-4-1",
+            TaskType.CODE: "openai/gpt-5-pro",
+            TaskType.REASONING: "google/gemini-2.5-pro",
+            TaskType.RESEARCH: "x-ai/grok-4",
             TaskType.WRITING: "anthropic/claude-opus-4-6",
             TaskType.TRIAGE: "anthropic/claude-haiku-4-5",
-            TaskType.UNKNOWN: "google/gemini-3.1-pro-preview",
+            TaskType.UNKNOWN: "anthropic/claude-sonnet-4-6",
         }
-        self.fallback_model = "google/gemini-3.1-pro-preview"
+        self.fallback_model = "anthropic/claude-sonnet-4-6"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -129,10 +132,10 @@ class TaskRouter:
 
     def _rationale(self, task_type: TaskType) -> str:
         return {
-            TaskType.CODE: "Code tasks routed to GPT-5.4 Pro (top SWE-bench score)",
-            TaskType.REASONING: "Structured reasoning routed to Gemini 3.1 Pro (GPQA 94.3%)",
-            TaskType.RESEARCH: "Real-time data routed to Grok (live search access)",
-            TaskType.WRITING: "Long-form writing routed to Claude Opus (200K context)",
-            TaskType.TRIAGE: "Fast classification routed to Haiku (cost-efficient)",
-            TaskType.UNKNOWN: "Unknown task type, using primary model",
+            TaskType.CODE: "Code and debugging routed to a code-specialized model",
+            TaskType.REASONING: "Structured reasoning routed to a high-reasoning model",
+            TaskType.RESEARCH: "Real-time data routed to a model with live search access",
+            TaskType.WRITING: "Long-form writing routed to a long-context model",
+            TaskType.TRIAGE: "Fast classification routed to a small, cost-efficient model",
+            TaskType.UNKNOWN: "Unknown task type, using the configured fallback model",
         }.get(task_type, "No rationale available")

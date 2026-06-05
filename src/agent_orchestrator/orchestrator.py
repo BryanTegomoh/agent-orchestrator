@@ -2,7 +2,7 @@
 Orchestrator: the primary brain of a multi-agent system.
 
 Core principle: the orchestrator thinks, routes, and synthesizes.
-It never does grunt work directly — that's what sub-agents are for.
+It never does grunt work directly; that's what sub-agents are for.
 
 Execution flow:
   1. Screen incoming content for injection attempts
@@ -55,7 +55,7 @@ class Orchestrator:
 
     Example:
         orch = Orchestrator(
-            primary_model="google/gemini-3.1-pro-preview",
+            primary_model="google/gemini-2.5-pro",
             memory_dir="./memory",
         )
         orch.register_agent("coding-agent", my_coding_agent_fn)

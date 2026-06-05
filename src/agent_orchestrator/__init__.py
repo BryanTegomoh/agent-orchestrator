@@ -1,5 +1,6 @@
 """
-agent-orchestrator: Production-grade multi-agent orchestration with intelligent model routing.
+agent-orchestrator: a typed reference implementation of three multi-agent patterns:
+task-based model routing, two-layer persistent memory, and prompt-injection screening.
 """
 
 from .memory import MemoryManager
