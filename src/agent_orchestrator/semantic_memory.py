@@ -15,7 +15,7 @@ Two-layer memory model:
 
   2. Vector layer (SemanticMemory): LanceDB table of embedded memory
      fragments. Good for: "what did we decide about X six weeks ago?"
-     — queries that keyword search can't answer.
+     (the queries that keyword search cannot answer).
 
 The vector layer ingests session transcripts, extracts memorable facts
 via an LLM, embeds them, and stores them in LanceDB. At recall time,
@@ -228,7 +228,9 @@ class SemanticMemory:
             return []
 
         try:
-            q = table.search(query_embedding).limit(top_k)
+            # Cosine metric must be set explicitly; LanceDB defaults to L2,
+            # which would make the distance-to-score conversion below meaningless.
+            q = table.search(query_embedding).metric("cosine").limit(top_k)
             if category_filter:
                 q = q.where(f"category = '{category_filter}'")
             rows = q.to_list()
@@ -238,9 +240,8 @@ class SemanticMemory:
 
         results = []
         for row in rows:
-            # LanceDB returns _distance (L2); convert to similarity score
             distance = row.get("_distance", 1.0)
-            score = max(0.0, 1.0 - distance)
+            score = self._distance_to_score(distance)
             if score < min_score:
                 continue
             fragment = MemoryFragment(
@@ -296,7 +297,11 @@ class SemanticMemory:
             ) from e
 
         self._db = lancedb.connect(str(self.db_path))
-        existing = self._db.table_names()
+        # list_tables() on newer LanceDB; table_names() on older releases.
+        try:
+            existing = self._db.list_tables()
+        except AttributeError:
+            existing = self._db.table_names()
 
         if self.TABLE_NAME not in existing:
             schema = self._make_schema()
@@ -341,3 +346,14 @@ class SemanticMemory:
             pa.field("created_at", pa.utf8()),
             pa.field("vector", pa.list_(pa.float32(), self.EMBEDDING_DIM)),
         ])
+
+    @staticmethod
+    def _distance_to_score(distance: float) -> float:
+        """
+        Convert a LanceDB cosine distance into a 0.0–1.0 similarity score.
+
+        Cosine distance is ``1 - cosine_similarity`` (range 0–2). A score of
+        1.0 means identical direction; anti-correlated vectors clamp to 0.0.
+        This is only correct when the search uses ``.metric("cosine")``.
+        """
+        return max(0.0, 1.0 - distance)

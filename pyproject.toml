@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "agent-orchestrator"
 version = "0.2.0"
-description = "Multi-agent orchestration with model routing, semantic memory, and prompt injection defense"
+description = "A typed reference implementation of multi-agent model routing, two-layer memory, and heuristic prompt-injection screening"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.11"
@@ -32,6 +32,10 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.6",
     "mypy>=1.10",
+    # Installed in dev/CI so the semantic-memory round-trip test runs.
+    "lancedb>=0.6.0",
+    "pyarrow>=16.0",
+    "numpy>=1.26",
 ]
 
 [tool.hatch.build.targets.wheel]
