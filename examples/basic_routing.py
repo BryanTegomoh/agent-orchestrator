@@ -5,7 +5,7 @@ Demonstrates how the orchestrator classifies tasks and routes them to
 the appropriate model without calling an LLM.
 """
 
-from agent_orchestrator import Orchestrator, TaskRouter, TaskType
+from agent_orchestrator import Orchestrator, TaskRouter
 
 # ── 1. Direct router usage ─────────────────────────────────────────────────────
 router = TaskRouter()
@@ -32,7 +32,7 @@ for task in tasks:
 print("=== Orchestrator with Sub-Agents ===\n")
 
 orch = Orchestrator(
-    primary_model="google/gemini-3.1-pro-preview",
+    primary_model="google/gemini-2.5-pro",
     memory_dir="/tmp/example-memory",
 )
 
