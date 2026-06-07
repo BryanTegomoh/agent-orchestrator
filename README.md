@@ -1,73 +1,69 @@
 # agent-orchestrator
 
-A typed reference implementation of three multi-agent patterns: task-based model routing, two-layer persistent memory, and heuristic prompt-injection screening.
+[![CI](https://github.com/BryanTegomoh/agent-orchestrator/actions/workflows/ci.yml/badge.svg)](https://github.com/BryanTegomoh/agent-orchestrator/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Typed: mypy strict](https://img.shields.io/badge/typed-mypy%20strict-blue.svg)](https://mypy.readthedocs.io/)
 
-This is a small, readable library that demonstrates the patterns. It is not a turnkey platform: it ships the routing, memory, and screening building blocks, and you wire them to your own LLM clients.
+A small, typed library for orchestrating multi-agent LLM work: a dependency-aware task graph over task-routed sub-agents, with two-layer memory, prompt-injection screening, and fail-loud execution.
+
+It is a reference implementation, not a turnkey platform. It ships the orchestration, routing, memory, and screening building blocks and stays out of the way; you wire them to your own LLM clients. Each block is a small, single-purpose module: typed Python, no required dependencies, strict-typed and tested.
 
 ---
 
 ## The core idea
 
-Most agent systems use one model for everything and one storage method for memory. Both choices compound over time into systems that are slow, expensive, and forgetful in the wrong ways.
+Most "agent frameworks" are a single model in a `while` loop. That shape fails in predictable ways once the work is real. This library is the set of patterns that address those failures, each kept small enough to read in one sitting.
 
-This library implements three patterns that address that:
+| Failure mode of the naive approach | What this does instead |
+|------------------------------------|------------------------|
+| One model for everything, so you overpay on easy tasks and underperform on hard ones | Route by task type to the right model class, with a deterministic O(1) classifier (no model call) |
+| Multi-step work runs out of order, or a step starts before its inputs exist | A task graph where dependencies are declared at creation and the scheduler gates on them |
+| Failure is swallowed; a partial run reads as success | Fail-loud execution: unknown work, unregistered agents, and failed tasks raise rather than returning a half-result |
+| An agent claims work it did not do | A self-report check rejects completion reports that reference tasks that do not exist |
+| Flat memory that forgets across sessions | Two layers: keyword recall for known categories, vector recall for everything else |
+| Untrusted input is treated as trusted | Screen external content before it reaches the model (as triage, not as a security boundary) |
 
-**1. Route by task type, not by default.** Different tasks have different optimal models:
+---
 
-| Task | Model class to route to | Why |
-|------|------------------------|-----|
-| Code / debugging / scripts | A code-specialized model | Strongest on coding benchmarks |
-| Structured reasoning / agentic | A high-reasoning model | Strongest on reasoning benchmarks |
-| Long-form synthesis / writing | A long-context model | Nuanced output, long context |
-| Real-time data / news | A live-search model | Access to current information |
-| Fast classification / triage | A small, fast model | Cost-efficient |
-| Local / private workloads | LM Studio (local) | No data leaves the machine |
+## Where this fits
 
-The library does not bundle benchmark claims or pin specific model versions. Pick the current best model in each class for your providers and set it in `model_map`.
-
-**2. Two-layer memory.** File-based memory for structured facts and active context. Vector-based memory (LanceDB) for semantic search across all prior sessions: the "what did we decide about X six weeks ago?" queries that keyword search cannot answer.
-
-**3. Screen everything.** External content (web pages, emails, tool outputs, user-pasted text) can contain instructions designed to hijack agent behavior. Filter before processing.
+This is a small, typed core, not a framework. For durable, distributed workflow execution, use a workflow engine such as Temporal. For a large agent framework with many built-in integrations, reach for LangGraph or AutoGen. Use this when you want the orchestration patterns themselves (task-based routing, a dependency-gated task graph, fail-loud execution, and two-layer memory) in a few readable modules you can own and extend.
 
 ---
 
 ## Architecture
 
 ```
- User / trigger
-      │
-      ▼
- ┌──────────────────────────────────────────────────────────────┐
- │                      Orchestrator                            │
- │           (primary reasoning model, your choice)             │
- │                                                              │
- │ 1. Screen untrusted input (heuristic filter)                 │
- │ 2. Recall context from the file-memory layer                 │
- │ 3. Route the task to a model / sub-agent                     │
- │ 4. Execute via sub-agent or direct LLM call                  │
- │ 5. Persist a task breadcrumb to active context               │
- └────────────┬──────────────┬──────────────┬───────────────────┘
-              │              │              │
-     ┌────────▼──┐   ┌───────▼───┐   ┌─────▼───────┐
-     │  Coding   │   │  Research │   │  Reasoning  │
-     │  Agent    │   │  Agent    │   │  Agent      │
-     │ (code     │   │ (live-    │   │ (reasoning  │
-     │  model)   │   │  search)  │   │  model)     │
-     └───────────┘   └───────────┘   └─────────────┘
-              │              │              │
-     ┌────────────────────────────────────────────────────────────┐
-     │                      Memory Stack                          │
-     │                                                            │
-     │ File layer (MemoryManager): wired into the Orchestrator    │
-     │   MEMORY.md         pointer index, loaded every session    │
-     │   memory/<topic>.md deep topic files, loaded on demand     │
-     │   active-context.md rolling 7-day state                    │
-     │                                                            │
-     │ Vector layer (SemanticMemory + LanceDB): optional. You     │
-     │ compose it alongside the Orchestrator yourself.            │
-     │   ingest: LLM extracts facts → embed → store               │
-     │   recall: query → embed → cosine top-k                     │
-     └────────────────────────────────────────────────────────────┘
+                          User or trigger
+                                │
+                                ▼
+ ┌────────────────────────────────────────────────────────────────┐
+ │ Orchestrator                                                   │
+ │ screen untrusted input → route by task type → delegate         │
+ └────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+ ┌────────────────────────────────────────────────────────────────┐
+ │ Execution                                                      │
+ │ run(task):        one screened, routed delegation              │
+ │ run_graph(graph): a dependency DAG, gated on parents           │
+ │                                                                │
+ │    t1 ┐                                                        │
+ │    t2 ┴─► t3 ─► t4   (t3 runs only after t1 and t2 finish)     │
+ └────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+ ┌────────────────────────────────────────────────────────────────┐
+ │ Routed sub-agents (you register them)                          │
+ │ coding, research, reasoning, writing, triage, local            │
+ └────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+ ┌────────────────────────────────────────────────────────────────┐
+ │ Memory                                                         │
+ │ file layer (wired in)  +  vector layer (optional, you compose) │
+ └────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -106,11 +102,11 @@ import litellm
 from agent_orchestrator import Orchestrator
 
 orch = Orchestrator(
-    primary_model="anthropic/claude-opus-4-6",   # or any model you prefer
+    primary_model="your/reasoning-model",   # any identifier your client understands
     memory_dir="./memory",
 )
 
-# Connect your LLM provider
+# Connect your LLM provider once.
 orch.set_llm_caller(
     lambda prompt, model: litellm.completion(
         model=model,
@@ -118,31 +114,117 @@ orch.set_llm_caller(
     ).choices[0].message.content
 )
 
-# Register specialized sub-agents
+# Register specialized sub-agents. Signature is (task, model) -> str.
 def coding_agent(task: str, model: str) -> str:
     return litellm.completion(
         model=model,
         messages=[
-            {"role": "system", "content": "You are a senior engineer. Return clean, tested code only."},
+            {"role": "system", "content": "Senior engineer. Return clean, tested code only."},
             {"role": "user", "content": task},
         ],
     ).choices[0].message.content
 
 orch.register_agent("coding-agent", coding_agent)
 
-# Task routing is automatic
+# Single task: screened, routed, delegated, then a breadcrumb is persisted.
 result = orch.run("Write a Python function to parse nested JSON safely")
-# routes to coding-agent → GPT-5.4 Pro class
-
-result = orch.run("Analyze the tradeoffs between RAG and fine-tuning for domain QA")
-# routes to primary model with relevant memory as context
+print(result.routing.task_type)   # TaskType.CODE
+print(result.output)
 ```
+
+For multi-step work with dependencies, build a `TaskGraph` and call `run_graph` (next section).
+
+---
+
+## Orchestration: the task graph
+
+A `TaskGraph` is a directed acyclic graph of tasks. Each task names the agent that should run it and, optionally, the parent tasks whose output it needs. A task becomes runnable only after every parent completes, so the ordering is enforced by the scheduler rather than by hand.
+
+```python
+from agent_orchestrator import Orchestrator, TaskGraph
+
+orch = Orchestrator(primary_model="your/reasoning-model", memory_dir="./memory")
+orch.set_llm_caller(my_llm_caller)
+orch.register_agent("researcher", researcher_fn)
+orch.register_agent("analyst", analyst_fn)
+
+g = TaskGraph()
+cost = g.add("research: cost",        "researcher", body="Estimate 3-year migration cost.")
+perf = g.add("research: performance", "researcher", body="Estimate query latency at scale.")
+synth = g.add("synthesize recommendation", "analyst", parents=[cost, perf])  # waits for both
+
+# cost and perf are independent and surface together; synth runs only once both finish,
+# and receives their outputs as context. Returns {task_id: output}.
+outputs = orch.run_graph(g)
+print(outputs[synth])
+```
+
+Dependencies are declared in the `add` call (`parents=[...]`), not linked afterward. That matters: linking after creation opens a window where the scheduler can claim a child before its inputs exist. Declaring up front closes it, and because a task can depend only on tasks that already exist, the graph is acyclic by construction.
+
+The graph runs without the LLM stack too, which makes it easy to test:
+
+```python
+from agent_orchestrator import TaskGraph
+
+g = TaskGraph()
+fetch = g.add("fetch", "worker", body="fetch the data")
+clean = g.add("clean", "worker", body="normalize it", parents=[fetch])
+
+def execute(task, parent_outputs):     # parent_outputs is {parent_id: result}
+    return f"{task.id}: done"
+
+outputs = g.run(execute)               # runs fetch, then clean
+```
+
+**Fail-loud, not silent.** A parent that does not resolve raises at creation. An assignee with no registered agent raises at run time. A task whose executor raises is marked failed, its descendants are left unreachable, and `run` raises a `TaskGraphError` rather than returning a partial result that reads like success.
+
+```python
+g.add("orphan", "nonexistent-agent")
+orch.run_graph(g)        # raises TaskGraphError naming the unrunnable task
+```
+
+**A task does not get to claim work it did not do.** When a task spawns child tasks, it can report them on completion; the report is checked against the graph and a phantom id is rejected. Self-reported success is not taken as evidence of success.
+
+```python
+planner = g.add("plan the work", "planner")
+sub = g.add("subtask", "worker", parents=[planner])
+
+g.complete(planner, "decomposed into 1 subtask", created=[sub])    # accepted
+g.complete(planner, "decomposed into 1 subtask", created=["t999"]) # raises SelfReportError
+```
+
+---
+
+## Goal loops
+
+For open-ended work where one turn rarely finishes the job, `run_goal` drives a worker until a judge accepts the result or a turn budget is spent. The judge's feedback is fed back into the worker each turn, and when the budget runs out the status is `"exhausted"`, never a false `"done"`.
+
+```python
+from agent_orchestrator import run_goal, Verdict
+
+def worker(goal: str, feedback: str) -> str:
+    return draft(goal, feedback)            # produce or revise an attempt
+
+def judge(goal: str, attempt: str) -> Verdict:
+    if meets_acceptance(attempt):
+        return Verdict(done=True)
+    return Verdict(done=False, feedback="what is still wrong")
+
+result = run_goal("Translate the page to French", worker, judge, max_turns=15)
+
+if result.status == "exhausted":
+    escalate(result)                        # budget spent without acceptance; handle it
+else:
+    ship(result.output)
+```
+
+Acceptance is decided by an explicit judge, not by the worker's own say-so. Write the goal as concrete acceptance criteria: the judge is only as good as the target it checks against.
 
 ---
 
 ## Model routing
 
-The `TaskRouter` classifies tasks using keyword signals and routes to the configured model. No LLM call required, so routing runs in microseconds.
+The `TaskRouter` classifies a task with keyword signals and returns a routing decision. No LLM call is involved, so routing runs in microseconds and is fully auditable.
 
 ```python
 from agent_orchestrator import TaskRouter
@@ -151,25 +233,36 @@ router = TaskRouter()
 
 decision = router.route("Debug this async deadlock in Python")
 print(decision.task_type)    # TaskType.CODE
-print(decision.model)        # openai/gpt-5-pro  (the illustrative default; override it)
+print(decision.model)        # the illustrative default for CODE; override it
 print(decision.confidence)   # 1.0
 print(decision.rationale)    # "Code and debugging routed to a code-specialized model"
 ```
 
-Override the model map to match your stack:
+The defaults are illustrative identifiers, not recommendations, and the routing logic is independent of any specific model. Set your own map:
 
 ```python
 from agent_orchestrator import TaskRouter, TaskType
 
 router = TaskRouter(model_map={
-    TaskType.CODE: "openai/gpt-5-pro",
+    TaskType.CODE:      "openai/gpt-5-pro",
     TaskType.REASONING: "google/gemini-2.5-pro",
-    TaskType.RESEARCH: "x-ai/grok-4",
-    TaskType.WRITING: "anthropic/claude-opus-4-6",
-    TaskType.TRIAGE: "anthropic/claude-haiku-4-5",
-    TaskType.UNKNOWN: "anthropic/claude-sonnet-4-6",
+    TaskType.RESEARCH:  "x-ai/grok-4",
+    TaskType.WRITING:   "anthropic/claude-opus-4-6",
+    TaskType.TRIAGE:    "anthropic/claude-haiku-4-5",
+    TaskType.UNKNOWN:   "anthropic/claude-sonnet-4-6",
 })
 ```
+
+Which class fits which task:
+
+| Task | Model class to route to | Why |
+|------|------------------------|-----|
+| Code / debugging / scripts | A code-specialized model | Strongest on coding benchmarks |
+| Structured reasoning / agentic | A high-reasoning model | Strongest on reasoning benchmarks |
+| Long-form synthesis / writing | A long-context model | Nuanced output, long context |
+| Real-time data / news | A live-search model | Access to current information |
+| Fast classification / triage | A small, fast model | Cost-efficient |
+| Local / private workloads | LM Studio (local) | No data leaves the machine |
 
 **Using local models via LM Studio:**
 
@@ -196,9 +289,7 @@ orch.register_agent("local-agent", local_agent)
 
 ## Two-layer memory
 
-The `Orchestrator` wires the file layer automatically. The vector layer is a
-separate component you compose alongside it (shown under "Combining both layers"
-below) when you want semantic recall.
+The `Orchestrator` wires the file layer automatically. The vector layer is a separate component you compose alongside it (shown under "Combining both layers" below) when you want semantic recall.
 
 ### File layer (structured)
 
@@ -262,19 +353,14 @@ sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=embed, agent_id="main"
 # Ingest a session: LLM extracts facts → embed → store in LanceDB
 sem.ingest_session("2026-03-09", transcript_text, extract_fn=extract)
 
-# Semantic search across all prior sessions
+# Semantic search across all prior sessions (cosine similarity, top-k)
 results = sem.query("decisions about storage architecture")
-context = sem.format_for_context(results)   # ready to inject into LLM prompt
+context = sem.format_for_context(results)   # ready to inject into an LLM prompt
 ```
 
-The extraction step is important. Raw session transcripts are too noisy to embed directly. A small, cheap LLM (GPT-4o-mini, Claude Haiku) extracts only the durable facts first. Quality of semantic recall depends heavily on quality of extraction.
+`query` returns an empty list, not an error, when the table is empty or the backend is unreachable, so check `results` before relying on it.
 
-What gets extracted:
-- Decisions made and why
-- User preferences and communication style
-- Facts about current projects, skills, constraints
-- Named entities: people, organizations, tools
-- Project state: what is complete, what is in progress
+The extraction step matters. Raw transcripts are too noisy to embed directly, so a small, cheap model pulls out the durable facts first; recall quality tracks extraction quality. What to extract: decisions and their rationale, stated preferences, stable facts about projects and constraints, named entities, and project state.
 
 **Using local embeddings via LM Studio:**
 
@@ -282,42 +368,29 @@ What gets extracted:
 local_client = openai.OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
 
 def local_embed(texts: list[str]) -> list[list[float]]:
-    resp = local_client.embeddings.create(
-        model="nomic-embed-text",   # or whichever embedding model is loaded
-        input=texts,
-    )
+    resp = local_client.embeddings.create(model="nomic-embed-text", input=texts)
     return [r.embedding for r in resp.data]
 
+# Match EMBEDDING_DIM to your model if it is not 1536-dimensional.
 sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=local_embed)
 ```
 
 ### Combining both layers
 
 ```python
-# File layer: fast keyword recall
-file_context = mem.recall(task)
-
-# Vector layer: semantic recall from all prior sessions
-semantic_results = sem.query(task, top_k=5)
+file_context = mem.recall(task)                              # fast keyword recall
+semantic_results = sem.query(task, top_k=5)                  # cross-session semantic recall
 semantic_context = sem.format_for_context(semantic_results)
-
-# Both injected into the prompt before the LLM call
-full_context = f"{file_context}\n\n{semantic_context}"
+full_context = f"{file_context}\n\n{semantic_context}"       # inject before the LLM call
 ```
 
 ---
 
 ## Prompt-injection screening
 
-`ContentFilter` is a heuristic pre-filter, not a security boundary. It matches a
-bank of regexes against untrusted content to catch common, lazy injection
-attempts before the orchestrator processes them. It will not stop an adversary
-who obfuscates, paraphrases, encodes, or uses unicode look-alikes. A `LOW`
-result means "no known pattern matched," not "this content is safe."
+`ContentFilter` is a heuristic pre-filter, not a security boundary. It matches a bank of regexes against untrusted content to catch common, lazy injection attempts before the orchestrator processes them. It will not stop an adversary who obfuscates, paraphrases, encodes, or uses unicode look-alikes. A `LOW` result means "no known pattern matched," not "this content is safe."
 
-Treat it as cheap triage, and pair it with the controls that actually contain
-injection: least-privilege tools, human-in-the-loop on high-impact actions, and
-gating on the model's proposed actions rather than its inputs.
+Treat it as cheap triage, and pair it with the controls that actually contain injection: least-privilege tools, human-in-the-loop on high-impact actions, and gating on the model's proposed actions rather than its inputs.
 
 ```python
 from agent_orchestrator import ContentFilter
@@ -344,64 +417,37 @@ Risk levels:
 
 ---
 
-## Design principles
+## Design decisions
 
-**The orchestrator delegates, not executes.** If a task takes more than a few seconds or returns more than a few KB, it should be a sub-agent task. The primary model thinks, routes, and synthesizes.
+The non-obvious choices, and the failure each one prevents.
 
-**Memory has two jobs.** File memory is fast and structured, good for known categories. Semantic memory is fuzzy and cross-session, good for open-ended recall. The two-layer approach uses each where it is strongest.
+**Dependencies are declared once, at creation.** A child is created with its parents (`add(..., parents=[...])`), never created first and linked later. Late linking opens a race where the scheduler claims a child before its inputs exist; declaring up front removes it. The graph is acyclic by construction, since a task can depend only on tasks that already exist.
 
-**Keyword search and vector search are complementary.** Keyword search is more precise when you know what category to look in. Vector search is better when you don't. Run both.
+**Unrunnable work fails loud.** An unknown parent raises at creation; an unregistered assignee raises at run time; a failed task leaves its descendants unreachable and `run` raises. A queue that silently drops impossible work is worse than one that stops and tells you why.
 
-**Local models for local work.** Not every task needs a frontier model. LM Studio makes it easy to run embedding models and smaller LLMs locally with zero data leaving the machine.
+**Self-reported success is not evidence.** A task that reports the children it spawned has those ids checked against the graph; phantom ids are rejected. The same instinct that distrusts a model's claim about the world distrusts its claim about its own actions.
 
-**External content is untrusted.** Prompt injection through search results, email content, and tool outputs is an active attack vector. Filter before processing.
+**Routing is deterministic and cheap.** Classification is an O(1) keyword pass with no model call, kept separate from execution. The decision layer stays auditable and free; the work layer is where the tokens go.
+
+**A loop that cannot reach its goal says so.** `run_goal` returns `"exhausted"`, never a false `"done"`, and acceptance is decided by an explicit judge rather than the worker grading its own homework.
+
+**Screening is triage, not a wall.** The regex filter catches the lazy attacks cheaply and is documented as exactly that, so it is never mistaken for the boundary. The boundary is least privilege and human review on high-impact actions.
+
+**Memory is two layers on purpose.** Keyword recall is precise when you know the category; vector recall is better when you don't. Each is used where it is strongest, and the expensive layer is optional.
+
+**No bundled benchmarks, no pinned model versions.** Model identifiers in the defaults are illustrative and overridable, and the routing logic depends on none of them. Nothing in the repo goes stale the day a new model ships, and no unverifiable performance claim is presented as fact.
 
 ---
 
 ## Production: memory backend health checks
 
-Memory backends (LanceDB, QMD, or any vector store) can silently fail in production. A broken index means agents lose semantic recall with no visible error. Implement health checks to catch this.
-
-**The pattern:** a scheduled script that verifies the memory backend is functional, repairs it if possible, and alerts if not.
+Memory backends (LanceDB, or any vector store) can fail silently in production. A broken index means agents lose semantic recall with no visible error. [`scripts/memory-healthcheck.sh`](scripts/memory-healthcheck.sh) is a runnable check: it confirms the table exists, runs a real query against it, and verifies freshness, alerting through a webhook on failure.
 
 ```bash
-#!/bin/bash
-# memory-healthcheck.sh: run on a schedule (cron, launchd, systemd timer)
-
-LANCEDB_PATH="./memory/lancedb"
-ALERT_ENDPOINT="https://your-webhook-or-api"
-
-# 1. Verify database exists and isn't corrupt
-if [ ! -d "$LANCEDB_PATH/memories.lance" ]; then
-  curl -s -X POST "$ALERT_ENDPOINT" -d '{"text":"Memory DB missing"}'
-  exit 1
-fi
-
-# 2. Run a test query (catches silent failures)
-python3 -c "
-import lancedb
-db = lancedb.connect('$LANCEDB_PATH')
-table = db.open_table('memories')
-assert len(table) > 0, 'Empty table'
-print(f'OK: {len(table)} records')
-" 2>&1 || {
-  curl -s -X POST "$ALERT_ENDPOINT" -d '{"text":"Memory DB query failed"}'
-  exit 1
-}
-
-# 3. Check freshness (optional: alert if no new entries in 48h)
-python3 -c "
-import lancedb, time
-db = lancedb.connect('$LANCEDB_PATH')
-table = db.open_table('memories')
-df = table.to_pandas()
-latest = df['timestamp'].max()
-age_hours = (time.time() - latest) / 3600
-if age_hours > 48:
-    print(f'WARN: latest entry is {age_hours:.0f}h old')
-    exit(2)
-print(f'Fresh: latest entry {age_hours:.1f}h ago')
-"
+LANCEDB_PATH=./memory/lancedb \
+ALERT_ENDPOINT=https://hooks.example.com/... \
+FRESHNESS_HOURS=48 \
+  scripts/memory-healthcheck.sh
 ```
 
 **Scheduling options by platform:**
@@ -413,32 +459,26 @@ print(f'Fresh: latest entry {age_hours:.1f}h ago')
 | Any | cron | `*/30 * * * * /path/to/memory-healthcheck.sh` |
 
 **Key principles:**
-- **Test with a real query**, not just file existence. A corrupt SQLite/Lance file passes `ls` but fails queries.
+- **Test with a real query**, not just file existence. A corrupt Lance file passes `ls` but fails queries.
 - **Check freshness.** A stale index is functionally equivalent to a broken one.
-- **Alert, don't just log.** If the memory backend is down, agents are running blind. Use webhooks (Slack, Telegram, PagerDuty) for immediate notification.
-- **Lock against concurrent runs.** Health checks that overlap with embedding jobs can cause issues.
-- **Auto-rotate logs.** Health checks run frequently; unbounded logs fill disks.
+- **Alert, don't just log.** If the backend is down, agents run blind. Use a webhook for immediate notice.
+- **Lock against concurrent runs.** Health checks that overlap with embedding jobs can corrupt state.
 
 ---
 
 ## Running the examples
 
+Every example runs with no API keys (stub agents and stub embeddings):
+
 ```bash
-git clone https://github.com/BryanTegomoh/agent-orchestrator
-cd agent-orchestrator
 pip install -e ".[dev]"
 
-# Task routing (no API keys needed)
-python examples/basic_routing.py
-
-# Security filter (no API keys needed)
+python examples/task_graph.py        # dependency-gated orchestration + fail-loud
+python examples/goal_loop.py         # judge loop; converges, then exhausts
+python examples/basic_routing.py     # task routing decisions
 python examples/security_screening.py
-
-# File-based memory and compaction (no API keys needed)
-python examples/memory_management.py
-
-# Semantic memory with stub embeddings (no API keys needed)
-python examples/semantic_search.py
+python examples/memory_management.py # file memory and compaction
+python examples/semantic_search.py   # vector recall (stub embeddings)
 ```
 
 ---
@@ -446,11 +486,11 @@ python examples/semantic_search.py
 ## Tests
 
 ```bash
-pytest                           # all tests
-pytest tests/test_router.py      # routing only
-pytest tests/test_security.py    # security filter only
-pytest --cov=agent_orchestrator  # with coverage
+pytest                              # full suite
+pytest --cov=agent_orchestrator     # with coverage
 ```
+
+The suite covers routing, screening, the task graph (gating, fail-loud, self-report), the goal loop, and orchestrator execution. CI runs `ruff`, `mypy --strict`, and `pytest` on Python 3.11 and 3.12.
 
 ---
 
