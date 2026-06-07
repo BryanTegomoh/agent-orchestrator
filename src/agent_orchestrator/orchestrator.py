@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from .memory import MemoryManager
 from .router import RoutingDecision, TaskRouter, TaskType
 from .security import ContentFilter
+from .taskgraph import Task, TaskGraph
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,54 @@ class Orchestrator:
     def run_batch(self, tasks: list[str]) -> list[TaskResult]:
         """Run multiple tasks sequentially, sharing memory context."""
         return [self.run(task) for task in tasks]
+
+    # ── Graph execution ──────────────────────────────────────────────────────
+
+    def run_graph(self, graph: TaskGraph) -> dict[str, str]:
+        """
+        Execute a dependency-aware TaskGraph, delegating each task to its agent.
+
+        Each task is screened, routed to a model, and delegated to the named
+        agent, with its parents' outputs passed in as context. A task whose
+        assignee is not registered raises, rather than being silently dropped:
+        an unrunnable assignment is a bug, not a no-op. Execution inherits the
+        graph's fail-loud contract, so a partial run never reads as success.
+        """
+        return graph.run(self._graph_executor)
+
+    def _graph_executor(self, task: Task, parent_outputs: dict[str, str]) -> str:
+        content = task.body or task.title
+        screen_result = self.security.screen(content, source="task-graph")
+        if not screen_result.safe_to_process:
+            raise RuntimeError(
+                f"task {task.id} blocked by content filter: {screen_result.recommendation}"
+            )
+
+        routing = self.router.route(content)
+        prompt = self._build_graph_prompt(task, parent_outputs)
+
+        if task.assignee:
+            if task.assignee not in self._agents:
+                raise KeyError(
+                    f"task {task.id} is assigned to unregistered agent "
+                    f"{task.assignee!r}; register it before running the graph"
+                )
+            output = self._agents[task.assignee](prompt, routing.model)
+        else:
+            output = self._llm_caller(prompt, routing.model)
+
+        self.memory.update_active_context(f"[graph:{task.id}] {task.title[:80]}")
+        return output
+
+    @staticmethod
+    def _build_graph_prompt(task: Task, parent_outputs: dict[str, str]) -> str:
+        content = task.body or task.title
+        if not parent_outputs:
+            return content
+        upstream = "\n\n".join(
+            f"[{pid}]\n{output}" for pid, output in parent_outputs.items()
+        )
+        return f"Inputs from upstream tasks:\n{upstream}\n\n---\n\n{content}"
 
     # ── Delegation helper ──────────────────────────────────────────────────────
 
