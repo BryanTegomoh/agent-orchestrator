@@ -134,8 +134,8 @@ class SemanticMemory:
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.embed_fn = embed_fn
         self.agent_id = agent_id
-        self._db = None
-        self._table = None
+        self._db: Any = None
+        self._table: Any = None
 
     # ── Ingestion ──────────────────────────────────────────────────────────────
 
@@ -143,7 +143,7 @@ class SemanticMemory:
         self,
         session_date: str,
         transcript: str,
-        extract_fn: Callable[[str], list[dict]],
+        extract_fn: Callable[[str], list[dict[str, Any]]],
         source_label: str = "",
     ) -> list[MemoryFragment]:
         """
@@ -183,7 +183,7 @@ class SemanticMemory:
         return fragments
 
     def ingest_fact(
-        self, content: str, category: str = "fact", metadata: dict | None = None
+        self, content: str, category: str = "fact", metadata: dict[str, Any] | None = None
     ) -> MemoryFragment:
         """Ingest a single fact directly (no transcript, no LLM extraction)."""
         if not self.embed_fn:
@@ -278,19 +278,19 @@ class SemanticMemory:
     def count(self) -> int:
         """Number of memory fragments stored."""
         try:
-            return self._get_table().count_rows()
+            return int(self._get_table().count_rows())
         except Exception:
             return 0
 
     # ── Internals ──────────────────────────────────────────────────────────────
 
-    def _get_table(self):
+    def _get_table(self) -> Any:
         """Lazy-connect to LanceDB and open the memories table."""
         if self._table is not None:
             return self._table
 
         try:
-            import lancedb  # type: ignore[import]
+            import lancedb  # type: ignore[import-untyped]
         except ImportError as e:
             raise ImportError(
                 "lancedb is required for SemanticMemory. Run: pip install lancedb"
@@ -330,9 +330,9 @@ class SemanticMemory:
         if rows:
             table.add(rows)
 
-    def _make_schema(self):
+    def _make_schema(self) -> Any:
         try:
-            import pyarrow as pa  # type: ignore[import]
+            import pyarrow as pa
         except ImportError as e:
             raise ImportError("pyarrow is required: pip install pyarrow") from e
 

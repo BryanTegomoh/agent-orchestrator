@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-orchestrator"
-version = "0.2.0"
+version = "0.3.0"
 description = "A typed reference implementation of multi-agent model routing, two-layer memory, and heuristic prompt-injection screening"
 readme = "README.md"
 license = { text = "MIT" }
@@ -55,9 +55,3 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-
-# semantic_memory uses lazily-imported optional dependencies (lancedb, pyarrow)
-# that are not installed in the base dev environment. Ignore that module only.
-[[tool.mypy.overrides]]
-module = "agent_orchestrator.semantic_memory"
-ignore_errors = true
