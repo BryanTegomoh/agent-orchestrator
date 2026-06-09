@@ -91,3 +91,61 @@ def test_count_round_trips(tmp_path):
     mem.ingest_fact("a")
     mem.ingest_fact("b")
     assert mem.count() == 2
+
+
+def test_reingesting_a_session_is_idempotent(tmp_path):
+    pytest.importorskip("lancedb")
+
+    def extract(_transcript):
+        return [
+            {"content": "fact one", "category": "fact"},
+            {"content": "fact two", "category": "fact"},
+        ]
+
+    mem = SemanticMemory(
+        db_path=tmp_path / "db",
+        embed_fn=_make_embed({"fact one": _vec((0, 1.0)), "fact two": _vec((1, 1.0))}),
+    )
+    mem.ingest_session("2026-06-09", "transcript", extract_fn=extract)
+    mem.ingest_session("2026-06-09", "transcript", extract_fn=extract)
+    assert mem.count() == 2  # replaying the session must not duplicate facts
+
+
+def test_ingesting_same_fact_twice_does_not_duplicate(tmp_path):
+    pytest.importorskip("lancedb")
+    mem = SemanticMemory(db_path=tmp_path / "db", embed_fn=_make_embed({"a": _vec((0, 1.0))}))
+    mem.ingest_fact("a")
+    mem.ingest_fact("a")
+    assert mem.count() == 1
+
+
+def test_custom_embedding_dim(tmp_path):
+    pytest.importorskip("lancedb")
+
+    def embed(texts):
+        return [[1.0] + [0.0] * 767 for _ in texts]  # 768-dim, nomic-embed-text style
+
+    mem = SemanticMemory(db_path=tmp_path / "db", embed_fn=embed, embedding_dim=768)
+    mem.ingest_fact("a 768-dimensional fact")
+    results = mem.query("a 768-dimensional fact", top_k=1)
+    assert results and results[0].score > 0.9
+
+
+def test_partial_embedding_batch_is_rejected(tmp_path):
+    pytest.importorskip("lancedb")
+
+    def extract(_transcript):
+        return [{"content": "one"}, {"content": "two"}]
+
+    mem = SemanticMemory(
+        db_path=tmp_path / "db",
+        embed_fn=lambda texts: [_vec((0, 1.0))],  # always one embedding, regardless of input
+    )
+    with pytest.raises(RuntimeError, match="refusing to ingest a partial batch"):
+        mem.ingest_session("2026-06-09", "transcript", extract_fn=extract)
+
+
+def test_non_identifier_category_filter_raises(tmp_path):
+    mem = SemanticMemory(db_path=tmp_path / "db", embed_fn=_make_embed({}))
+    with pytest.raises(ValueError):
+        mem.query("anything", category_filter="fact' OR '1'='1")

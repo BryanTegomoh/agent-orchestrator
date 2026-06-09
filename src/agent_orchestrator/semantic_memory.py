@@ -31,6 +31,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,6 +40,10 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Namespace for deterministic fragment ids: the same (agent, session, content)
+# always maps to the same id, which is what makes re-ingestion idempotent.
+_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_DNS, "agent-orchestrator.semantic-memory")
 
 
 @dataclass
@@ -121,7 +126,7 @@ class SemanticMemory:
     """
 
     TABLE_NAME = "memories"
-    EMBEDDING_DIM = 1536        # text-embedding-3-small default
+    EMBEDDING_DIM = 1536        # default (text-embedding-3-small); override per instance
     TOP_K_DEFAULT = 5
 
     def __init__(
@@ -129,11 +134,18 @@ class SemanticMemory:
         db_path: str | Path,
         embed_fn: Callable[[list[str]], list[list[float]]] | None = None,
         agent_id: str = "default",
+        embedding_dim: int = EMBEDDING_DIM,
     ):
+        """
+        embedding_dim must match your embedding model's output width. The
+        default fits text-embedding-3-small (1536); a local model such as
+        nomic-embed-text is 768-dimensional, so pass embedding_dim=768.
+        """
         self.db_path = Path(db_path)
         self.db_path.mkdir(parents=True, exist_ok=True)
         self.embed_fn = embed_fn
         self.agent_id = agent_id
+        self.embedding_dim = embedding_dim
         self._db: Any = None
         self._table: Any = None
 
@@ -151,6 +163,10 @@ class SemanticMemory:
 
         extract_fn: (transcript: str) -> list[{"content": str, "category": str}]
         Returns the list of MemoryFragments that were ingested.
+
+        Fragment ids derive from (agent, session, content), and storage is an
+        upsert, so re-ingesting the same session updates records instead of
+        duplicating them.
         """
         if not self.embed_fn:
             raise RuntimeError("embed_fn is required for ingestion. See class docstring.")
@@ -160,14 +176,15 @@ class SemanticMemory:
             logger.info("No memorable facts extracted from session %s", session_date)
             return []
 
+        source = source_label or session_date
         fragments = [
             MemoryFragment(
-                id=str(uuid.uuid4()),
+                id=self._fragment_id(source, f["content"]),
                 agent=self.agent_id,
                 session_date=session_date,
                 content=f["content"],
                 category=f.get("category", "fact"),
-                source_session=source_label or session_date,
+                source_session=source,
             )
             for f in raw_facts
             if f.get("content")
@@ -175,6 +192,11 @@ class SemanticMemory:
 
         texts = [f.content for f in fragments]
         embeddings = self.embed_fn(texts)
+        if len(embeddings) != len(texts):
+            raise RuntimeError(
+                f"embed_fn returned {len(embeddings)} embeddings for {len(texts)} texts; "
+                "refusing to ingest a partial batch"
+            )
         for fragment, embedding in zip(fragments, embeddings):
             fragment.embedding = embedding
 
@@ -185,12 +207,16 @@ class SemanticMemory:
     def ingest_fact(
         self, content: str, category: str = "fact", metadata: dict[str, Any] | None = None
     ) -> MemoryFragment:
-        """Ingest a single fact directly (no transcript, no LLM extraction)."""
+        """
+        Ingest a single fact directly (no transcript, no LLM extraction).
+        Ingesting the same content twice updates the existing record
+        instead of storing a duplicate.
+        """
         if not self.embed_fn:
             raise RuntimeError("embed_fn is required. See class docstring.")
 
         fragment = MemoryFragment(
-            id=str(uuid.uuid4()),
+            id=self._fragment_id("direct", content),
             agent=self.agent_id,
             session_date=datetime.now().strftime("%Y-%m-%d"),
             content=content,
@@ -219,6 +245,13 @@ class SemanticMemory:
         """
         if not self.embed_fn:
             raise RuntimeError("embed_fn is required for queries. See class docstring.")
+
+        # The filter lands in a SQL-style where clause; allow only
+        # identifier-like category names rather than escaping.
+        if category_filter and not re.fullmatch(r"[A-Za-z0-9_-]+", category_filter):
+            raise ValueError(
+                f"category_filter must be identifier-like, got {category_filter!r}"
+            )
 
         query_embedding = self.embed_fn([query])[0]
 
@@ -290,7 +323,7 @@ class SemanticMemory:
             return self._table
 
         try:
-            import lancedb  # type: ignore[import-untyped]
+            import lancedb
         except ImportError as e:
             raise ImportError(
                 "lancedb is required for SemanticMemory. Run: pip install lancedb"
@@ -311,10 +344,18 @@ class SemanticMemory:
 
         return self._table
 
+    def _fragment_id(self, source_session: str, content: str) -> str:
+        """Deterministic id so the same fact maps to the same row across runs."""
+        return str(uuid.uuid5(_ID_NAMESPACE, f"{self.agent_id}|{source_session}|{content}"))
+
     def _upsert(self, fragments: list[MemoryFragment]) -> None:
+        """Insert-or-update by id. Re-ingesting a fact updates its row in place."""
         table = self._get_table()
-        rows = [
-            {
+        rows: dict[str, dict[str, Any]] = {}
+        for f in fragments:
+            if f.embedding is None:
+                continue
+            rows[f.id] = {
                 "id": f.id,
                 "agent": f.agent,
                 "session_date": f.session_date,
@@ -324,11 +365,13 @@ class SemanticMemory:
                 "created_at": f.created_at,
                 "vector": f.embedding,
             }
-            for f in fragments
-            if f.embedding is not None
-        ]
         if rows:
-            table.add(rows)
+            (
+                table.merge_insert("id")
+                .when_matched_update_all()
+                .when_not_matched_insert_all()
+                .execute(list(rows.values()))
+            )
 
     def _make_schema(self) -> Any:
         try:
@@ -344,7 +387,7 @@ class SemanticMemory:
             pa.field("category", pa.utf8()),
             pa.field("source_session", pa.utf8()),
             pa.field("created_at", pa.utf8()),
-            pa.field("vector", pa.list_(pa.float32(), self.EMBEDDING_DIM)),
+            pa.field("vector", pa.list_(pa.float32(), self.embedding_dim)),
         ])
 
     @staticmethod

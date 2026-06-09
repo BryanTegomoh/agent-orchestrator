@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-orchestrator"
-version = "0.3.0"
+version = "0.4.0"
 description = "A typed reference implementation of multi-agent model routing, two-layer memory, and heuristic prompt-injection screening"
 readme = "README.md"
 license = { text = "MIT" }
@@ -55,3 +55,10 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+# lancedb and pyarrow are optional runtime dependencies whose type coverage
+# varies by version; treat their imports as Any rather than pinning to one
+# environment's stubs.
+[[tool.mypy.overrides]]
+module = ["lancedb.*", "pyarrow.*"]
+ignore_missing_imports = true
