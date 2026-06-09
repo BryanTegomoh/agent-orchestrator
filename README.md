@@ -21,8 +21,53 @@ Most "agent frameworks" are a single model in a `while` loop. That shape fails i
 | Multi-step work runs out of order, or a step starts before its inputs exist | A task graph where dependencies are declared at creation and the scheduler gates on them |
 | Failure is swallowed; a partial run reads as success | Fail-loud execution: unknown work, unregistered agents, and failed tasks raise rather than returning a half-result |
 | An agent claims work it did not do | A self-report check rejects completion reports that reference tasks that do not exist |
-| Flat memory that forgets across sessions | Two layers: keyword recall for known categories, vector recall for everything else |
+| Flat memory that forgets across sessions | Two layers: keyword recall for known categories, vector recall for semantic queries across sessions |
 | Untrusted input is treated as trusted | Screen external content before it reaches the model (as triage, not as a security boundary) |
+
+---
+
+## The looping model
+
+The shift this library is built for: instead of prompting an agent one step at a time, you define a loop and let it run to a goal. Two shapes, one primitive for each.
+
+**Single-agent loop (`run_goal`).** One worker produces, a judge scores the result against the goal, and the loop repeats with the judge's feedback until the goal is met or the budget is spent. The rule that decides whether this works: the judge must be independent of the worker. A worker reviewing its own output tends to approve it; an independent judge, or a deterministic check such as a test suite or a type checker, keeps the loop honest.
+
+```
+ goal + acceptance criteria
+             │
+             ▼
+      worker produces ◄───────────────┐
+             │                        │
+             ▼               feedback │
+       judge checks ── not done ──────┘
+             │
+     done ───┴─── budget spent
+       │              │
+       ▼              ▼
+   "done"        "exhausted"
+                 (never a false done)
+```
+
+**Fleet loop (`run_graph`).** An orchestrator owns the goal, declares the steps as a task graph, and delegates each step to a specialist. Independent steps run in parallel; dependent steps wait for their inputs; a final judge gate decides whether the result ships. A specialist can itself spawn a sub-graph, and the self-report gate checks any claim it makes about that work.
+
+```
+            orchestrator owns the goal
+                       │
+                       ▼
+              declares a TaskGraph
+                       │
+        ┌──────────────┼──────────────┐
+        ▼              ▼              ▼
+   specialist     specialist     specialist    independent: run in parallel
+        └──────────────┼──────────────┘
+                       ▼
+                synthesis task                 gated: waits for all its parents
+                       │
+                       ▼
+                  judge gate                   optional: run_goal on the result
+```
+
+**Closed, not open.** An open loop explores an unbounded space: it can find things you did not specify, it spends heavily to do so, and against a loose standard it produces low-quality output at scale. A closed loop is bounded: a human designs the path, every step has a check, and the budget is predictable. This library is deliberately closed. The path is the `TaskGraph` you declare, the checks are the judge and the fail-loud invariants, and the loop ends in an explicit verdict either way.
 
 ---
 
@@ -175,6 +220,8 @@ def execute(task, parent_outputs):     # parent_outputs is {parent_id: result}
 
 outputs = g.run(execute)               # runs fetch, then clean
 ```
+
+**Independent tasks can run in parallel.** Ready tasks surface in waves of mutually independent work. The default executes a wave sequentially; pass `max_workers` to run it concurrently (`g.run(execute, max_workers=4)` or `orch.run_graph(g, max_workers=4)`), in which case your executor and agents must be thread-safe. Graph state is only ever mutated from the calling thread.
 
 **Fail-loud, not silent.** A parent that does not resolve raises at creation. An assignee with no registered agent raises at run time. A task whose executor raises is marked failed, its descendants are left unreachable, and `run` raises a `TaskGraphError` rather than returning a partial result that reads like success.
 
@@ -371,8 +418,8 @@ def local_embed(texts: list[str]) -> list[list[float]]:
     resp = local_client.embeddings.create(model="nomic-embed-text", input=texts)
     return [r.embedding for r in resp.data]
 
-# Match EMBEDDING_DIM to your model if it is not 1536-dimensional.
-sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=local_embed)
+# embedding_dim must match the model: nomic-embed-text is 768-dimensional.
+sem = SemanticMemory(db_path="./memory/lancedb", embed_fn=local_embed, embedding_dim=768)
 ```
 
 ### Combining both layers
@@ -435,6 +482,8 @@ The non-obvious choices, and the failure each one prevents.
 
 **Memory is two layers on purpose.** Keyword recall is precise when you know the category; vector recall is better when you don't. Each is used where it is strongest, and the expensive layer is optional.
 
+**Re-ingesting is idempotent.** Fragment ids derive from content, and storage is an upsert, so replaying a session updates rows instead of duplicating every fact. A pipeline that retries safely beats one that quietly grows duplicates.
+
 **No bundled benchmarks, no pinned model versions.** Model identifiers in the defaults are illustrative and overridable, and the routing logic depends on none of them. Nothing in the repo goes stale the day a new model ships, and no unverifiable performance claim is presented as fact.
 
 ---
@@ -473,6 +522,7 @@ Every example runs with no API keys (stub agents and stub embeddings):
 ```bash
 pip install -e ".[dev]"
 
+python examples/full_pipeline.py     # the closed loop end to end: parallel fleet + judge gate
 python examples/task_graph.py        # dependency-gated orchestration + fail-loud
 python examples/goal_loop.py         # judge loop; converges, then exhausts
 python examples/basic_routing.py     # task routing decisions
@@ -490,7 +540,7 @@ pytest                              # full suite
 pytest --cov=agent_orchestrator     # with coverage
 ```
 
-The suite covers routing, screening, the task graph (gating, fail-loud, self-report), the goal loop, and orchestrator execution. CI runs `ruff`, `mypy --strict`, and `pytest` on Python 3.11 and 3.12.
+The suite covers routing, screening, the task graph (gating, parallel waves, fail-loud, self-report), the goal loop, orchestrator execution, file memory, and semantic memory (cosine scores, idempotent re-ingest). CI runs `ruff`, `mypy --strict`, and `pytest` on Python 3.11 and 3.12.
 
 ---
 
