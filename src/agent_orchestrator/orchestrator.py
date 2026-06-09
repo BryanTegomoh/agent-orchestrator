@@ -19,6 +19,7 @@ Sub-agents run on task-optimized models (code, search, writing, etc.).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -76,6 +77,9 @@ class Orchestrator:
         self.security = ContentFilter(strict_mode=strict_security)
         self._agents: dict[str, Callable[[str, str], str]] = {}
         self._llm_caller: Callable[[str, str], str] = self._default_llm_call
+        # MemoryManager does unlocked read-modify-write; serialize writes when
+        # graph tasks run concurrently.
+        self._memory_lock = threading.Lock()
 
     # ── Agent registry ─────────────────────────────────────────────────────────
 
@@ -170,7 +174,7 @@ class Orchestrator:
 
     # ── Graph execution ──────────────────────────────────────────────────────
 
-    def run_graph(self, graph: TaskGraph) -> dict[str, str]:
+    def run_graph(self, graph: TaskGraph, *, max_workers: int = 1) -> dict[str, str]:
         """
         Execute a dependency-aware TaskGraph, delegating each task to its agent.
 
@@ -179,8 +183,11 @@ class Orchestrator:
         assignee is not registered raises, rather than being silently dropped:
         an unrunnable assignment is a bug, not a no-op. Execution inherits the
         graph's fail-loud contract, so a partial run never reads as success.
+
+        max_workers > 1 runs independent tasks concurrently; your agents and
+        LLM caller must be thread-safe.
         """
-        return graph.run(self._graph_executor)
+        return graph.run(self._graph_executor, max_workers=max_workers)
 
     def _graph_executor(self, task: Task, parent_outputs: dict[str, str]) -> str:
         content = task.body or task.title
@@ -203,7 +210,8 @@ class Orchestrator:
         else:
             output = self._llm_caller(prompt, routing.model)
 
-        self.memory.update_active_context(f"[graph:{task.id}] {task.title[:80]}")
+        with self._memory_lock:
+            self.memory.update_active_context(f"[graph:{task.id}] {task.title[:80]}")
         return output
 
     @staticmethod

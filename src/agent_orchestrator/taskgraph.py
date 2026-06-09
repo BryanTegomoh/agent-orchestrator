@@ -26,6 +26,7 @@ The design avoids the failure modes that bite naive orchestrators:
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
 
@@ -189,30 +190,56 @@ class TaskGraph:
 
     # ── Execution ────────────────────────────────────────────────────────────
 
-    def run(self, executor: Executor) -> dict[str, str]:
+    def run(self, executor: Executor, *, max_workers: int = 1) -> dict[str, str]:
         """
         Execute the graph in dependency order and return each task's output.
 
-        Ready tasks are surfaced in waves; the reference loop runs each wave
-        sequentially, but the tasks in a wave are independent and a deployment
-        is free to run them concurrently. Execution is fail-loud: if any task
-        fails (or is left unreachable because an ancestor failed), this raises
-        ``TaskGraphError`` instead of returning a partial result.
+        Ready tasks surface in waves of mutually independent tasks. With the
+        default ``max_workers=1`` each wave runs sequentially; a higher value
+        runs the tasks in a wave concurrently in a thread pool, in which case
+        the executor must be thread-safe. Graph state is only mutated from the
+        calling thread either way.
+
+        Execution is fail-loud: if any task fails (or is left unreachable
+        because an ancestor failed), this raises ``TaskGraphError`` instead of
+        returning a partial result.
         """
+        if max_workers < 1:
+            raise ValueError("max_workers must be >= 1")
+
         outputs: dict[str, str] = {}
         while True:
             wave = self.ready()
             if not wave:
                 break
+            if max_workers == 1 or len(wave) == 1:
+                for task in wave:
+                    task.state = TaskState.RUNNING
+                    try:
+                        result = executor(task, self.parent_outputs(task.id))
+                    except Exception as exc:
+                        self.fail(task.id, str(exc))
+                        continue
+                    self.complete(task.id, result)
+                    outputs[task.id] = result
+                continue
+
             for task in wave:
                 task.state = TaskState.RUNNING
-                try:
-                    result = executor(task, self.parent_outputs(task.id))
-                except Exception as exc:
-                    self.fail(task.id, str(exc))
-                    continue
-                self.complete(task.id, result)
-                outputs[task.id] = result
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures: dict[Future[str], Task] = {
+                    pool.submit(executor, task, self.parent_outputs(task.id)): task
+                    for task in wave
+                }
+                for future in as_completed(futures):
+                    task = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        self.fail(task.id, str(exc))
+                        continue
+                    self.complete(task.id, result)
+                    outputs[task.id] = result
 
         failed = self.failed()
         unreachable = self.unfinished()

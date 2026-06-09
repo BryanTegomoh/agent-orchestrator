@@ -62,3 +62,17 @@ def test_run_graph_unknown_assignee_fails_loud(orch):
     g.add("orphan", "ghost-agent", body="do something")
     with pytest.raises(TaskGraphError):
         orch.run_graph(g)
+
+
+def test_run_graph_parallel_waves(orch):
+    orch.register_agent("researcher", lambda prompt, model: "finding")
+    orch.register_agent("analyst", lambda prompt, model: "report")
+
+    g = TaskGraph()
+    a = g.add("research a", "researcher", body="estimate cost")
+    b = g.add("research b", "researcher", body="estimate latency")
+    synth = g.add("synthesize", "analyst", body="combine", parents=[a, b])
+
+    outputs = orch.run_graph(g, max_workers=2)
+    assert outputs[synth] == "report"
+    assert g.is_complete()

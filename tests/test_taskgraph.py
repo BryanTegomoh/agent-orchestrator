@@ -1,5 +1,7 @@
 """Tests for the dependency-aware task graph."""
 
+import threading
+
 import pytest
 
 from agent_orchestrator.taskgraph import (
@@ -94,3 +96,62 @@ def test_run_is_fail_loud_and_leaves_descendants_unreachable():
 
     assert g[a].state is TaskState.FAILED
     assert g[b].state is TaskState.PENDING  # never promoted; surfaced as unreachable
+
+
+def test_parallel_wave_runs_concurrently():
+    g = TaskGraph()
+    a = g.add("a", "worker")
+    b = g.add("b", "worker")
+
+    # Both tasks must be in flight at once to pass the barrier; sequential
+    # execution would time out, fail both tasks, and raise.
+    barrier = threading.Barrier(2, timeout=5)
+
+    def execute(task, parent_outputs):
+        barrier.wait()
+        return task.id
+
+    outputs = g.run(execute, max_workers=2)
+    assert set(outputs) == {a, b}
+
+
+def test_parallel_run_still_respects_dependencies():
+    g = TaskGraph()
+    a = g.add("a", "worker")
+    b = g.add("b", "worker")
+    child = g.add("child", "worker", parents=[a, b])
+
+    order: list[str] = []
+    lock = threading.Lock()
+
+    def execute(task, parent_outputs):
+        with lock:
+            order.append(task.id)
+        if task.id == child:
+            assert set(parent_outputs) == {a, b}
+        return task.id
+
+    g.run(execute, max_workers=4)
+    assert order.index(child) > order.index(a)
+    assert order.index(child) > order.index(b)
+
+
+def test_parallel_failure_is_still_fail_loud():
+    g = TaskGraph()
+    g.add("a", "worker")
+    g.add("b", "worker")
+
+    def execute(task, parent_outputs):
+        if task.title == "b":
+            raise RuntimeError("boom")
+        return "ok"
+
+    with pytest.raises(TaskGraphError):
+        g.run(execute, max_workers=2)
+
+
+def test_invalid_max_workers_raises():
+    g = TaskGraph()
+    g.add("a", "worker")
+    with pytest.raises(ValueError):
+        g.run(lambda t, p: "x", max_workers=0)
