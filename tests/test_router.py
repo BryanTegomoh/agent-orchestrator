@@ -54,3 +54,16 @@ def test_custom_model_map():
     custom_router = TaskRouter(model_map={TaskType.CODE: "my-custom/model"})
     decision = custom_router.route("Write a SQL query")
     assert decision.model == "my-custom/model"
+
+
+def test_tied_signals_report_low_confidence(router):
+    # One code signal ("debug") and one reasoning signal ("strategy"):
+    # an even split must not report false certainty.
+    decision = router.route("debug the strategy")
+    assert decision.confidence == 0.5
+
+
+def test_dominant_signals_report_high_confidence(router):
+    decision = router.route("Debug this Python script and refactor the function")
+    assert decision.task_type == TaskType.CODE
+    assert decision.confidence == 1.0

@@ -34,7 +34,7 @@ class RoutingDecision:
     model: str
     agent: str | None          # named sub-agent if applicable
     rationale: str
-    confidence: float             # 0.0 – 1.0
+    confidence: float             # winning type's share of matched signals, 0.0 – 1.0
     fallback_model: str
 
 
@@ -120,8 +120,10 @@ class TaskRouter:
         if best_score == 0:
             return TaskType.UNKNOWN, 0.5
 
-        total = sum(scores.values()) or 1
-        confidence = min(best_score / total + 0.3, 1.0)  # floor at 30% for any match
+        # Confidence is the winning type's share of all matched signals, so a
+        # task with evenly split signals reports 0.5, not false certainty.
+        total = sum(scores.values())
+        confidence = best_score / total
         return best_type, round(confidence, 2)
 
     def _agent_for(self, task_type: TaskType) -> str | None:

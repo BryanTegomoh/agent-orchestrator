@@ -24,6 +24,11 @@ class MemoryManager:
     """
     Manages structured memory files for cross-session agent continuity.
 
+    Files are read and written without locking: the manager assumes one
+    process touches a memory directory at a time. Lines in active-context.md
+    without a timestamp (for example, notes a human added by hand) are
+    never expired.
+
     Usage:
         mem = MemoryManager("/path/to/workspace/memory")
         mem.recall("job search")          # load relevant topic files
@@ -171,9 +176,13 @@ class MemoryManager:
             self.index_file.write_text(existing.rstrip() + f"\n{pointer_line}\n")
 
     def _matches(self, query: str, content: str) -> bool:
-        query_terms = query.lower().split()
+        # Whole-word matching: a query for "date" should not load every file
+        # that happens to contain "updated".
         content_lower = content.lower()
-        return any(term in content_lower for term in query_terms)
+        return any(
+            re.search(rf"\b{re.escape(term)}\b", content_lower)
+            for term in query.lower().split()
+        )
 
     def _slugify(self, text: str) -> str:
         return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
