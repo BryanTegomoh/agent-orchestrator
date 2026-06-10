@@ -7,7 +7,38 @@
 
 A small, typed library for orchestrating multi-agent LLM work: a dependency-aware task graph over task-routed sub-agents, with two-layer memory, prompt-injection screening, and fail-loud execution.
 
-It is a reference implementation, not a turnkey platform. It ships the orchestration, routing, memory, and screening building blocks and stays out of the way; you wire them to your own LLM clients. Each block is a small, single-purpose module: typed Python, no required dependencies, strict-typed and tested.
+It is a reference implementation, not a turnkey platform. It ships the orchestration, routing, memory, and screening building blocks and stays out of the way; you wire them to your own LLM clients. Each block is a small, single-purpose module: strict-typed, tested, no required dependencies.
+
+---
+
+## At a glance
+
+```python
+from agent_orchestrator import Orchestrator, TaskGraph, run_goal
+
+orch = Orchestrator(primary_model="your/reasoning-model", memory_dir="./memory")
+orch.set_llm_caller(call_llm)                      # (prompt, model) -> str, any provider
+orch.register_agent("researcher", research_agent)  # (task, model) -> str
+orch.register_agent("writer", writer_agent)
+
+# Declare the work as a graph. Parents are set at creation, so a step
+# cannot reach a runnable state before its inputs exist.
+g = TaskGraph()
+cost = g.add("research: cost", "researcher", body="Estimate 3-year migration cost.")
+perf = g.add("research: latency", "researcher", body="Estimate p95 latency at scale.")
+memo = g.add("draft the memo", "writer", parents=[cost, perf])
+
+# cost and perf run concurrently; memo waits for both and receives their
+# outputs as context. Any failure raises, naming the failed and unreachable
+# tasks. A partial run never reads as success.
+outputs = orch.run_graph(g, max_workers=2)
+
+# Gate the result behind an independent judge before it ships. status is
+# "done" only if the judge accepts; a spent budget reports "exhausted".
+result = run_goal("Memo covers cost and latency.", reviser, judge, max_turns=5)
+```
+
+`python examples/full_pipeline.py` runs this exact shape end to end, with stub agents and no API keys.
 
 ---
 
@@ -77,39 +108,19 @@ This is a small, typed core, not a framework. For durable, distributed workflow 
 
 ---
 
-## Architecture
+## The pieces
 
-```
-                          User or trigger
-                                │
-                                ▼
- ┌────────────────────────────────────────────────────────────────┐
- │ Orchestrator                                                   │
- │ screen untrusted input → route by task type → delegate         │
- └────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
- ┌────────────────────────────────────────────────────────────────┐
- │ Execution                                                      │
- │ run(task):        one screened, routed delegation              │
- │ run_graph(graph): a dependency DAG, gated on parents           │
- │                                                                │
- │    t1 ┐                                                        │
- │    t2 ┴─► t3 ─► t4   (t3 runs only after t1 and t2 finish)     │
- └────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
- ┌────────────────────────────────────────────────────────────────┐
- │ Routed sub-agents (you register them)                          │
- │ coding, research, reasoning, writing, triage, local            │
- └────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
- ┌────────────────────────────────────────────────────────────────┐
- │ Memory                                                         │
- │ file layer (wired in)  +  vector layer (optional, you compose) │
- └────────────────────────────────────────────────────────────────┘
-```
+Seven small modules, strict-typed, no required dependencies. The orchestrator's single-task pipeline is screen → recall → route → delegate → persist; `run_graph` applies it per task across a gated graph.
+
+| Module | Role |
+|--------|------|
+| [`taskgraph.py`](src/agent_orchestrator/taskgraph.py) | Dependency-gated DAG: parents declared at creation, ready waves, optional thread-pool execution, fail-loud invariants, self-report gate |
+| [`goal.py`](src/agent_orchestrator/goal.py) | Judge loop: worker, independent judge, feedback, explicit `done` or `exhausted` |
+| [`orchestrator.py`](src/agent_orchestrator/orchestrator.py) | Ties it together: screening, memory recall, routing, delegation, graph execution |
+| [`router.py`](src/agent_orchestrator/router.py) | Deterministic keyword classifier; task type to model, no model call |
+| [`memory.py`](src/agent_orchestrator/memory.py) | File memory: pointer index, topic files, rolling 7-day active context |
+| [`semantic_memory.py`](src/agent_orchestrator/semantic_memory.py) | Vector memory on LanceDB: extract, embed, idempotent upsert, cosine top-k |
+| [`security.py`](src/agent_orchestrator/security.py) | Heuristic injection triage for untrusted content |
 
 ---
 
@@ -140,7 +151,7 @@ pip install -e ".[all]"
 
 ---
 
-## Quick start
+## Wiring an LLM provider
 
 ```python
 import litellm
@@ -227,7 +238,9 @@ outputs = g.run(execute)               # runs fetch, then clean
 
 ```python
 g.add("orphan", "nonexistent-agent")
-orch.run_graph(g)        # raises TaskGraphError naming the unrunnable task
+orch.run_graph(g)
+# TaskGraphError: failed: t1 ("task t1 is assigned to unregistered agent
+# 'nonexistent-agent'; register it before running the graph")
 ```
 
 **A task does not get to claim work it did not do.** When a task spawns child tasks, it can report them on completion; the report is checked against the graph and a phantom id is rejected. Self-reported success is not taken as evidence of success.
@@ -237,7 +250,8 @@ planner = g.add("plan the work", "planner")
 sub = g.add("subtask", "worker", parents=[planner])
 
 g.complete(planner, "decomposed into 1 subtask", created=[sub])    # accepted
-g.complete(planner, "decomposed into 1 subtask", created=["t999"]) # raises SelfReportError
+g.complete(planner, "decomposed into 1 subtask", created=["t999"])
+# SelfReportError: task 't1' reported creating 't999', which does not exist
 ```
 
 ---
@@ -485,6 +499,18 @@ The non-obvious choices, and the failure each one prevents.
 **Re-ingesting is idempotent.** Fragment ids derive from content, and storage is an upsert, so replaying a session updates rows instead of duplicating every fact. A pipeline that retries safely beats one that quietly grows duplicates.
 
 **No bundled benchmarks, no pinned model versions.** Model identifiers in the defaults are illustrative and overridable, and the routing logic depends on none of them. Nothing in the repo goes stale the day a new model ships, and no unverifiable performance claim is presented as fact.
+
+---
+
+## Limitations
+
+Known edges, stated rather than discovered:
+
+- **The router is a keyword heuristic.** Fast, free, and auditable, but not a semantic classifier; unusual phrasing can misroute. `delegate()` exists for when you already know where work should go.
+- **Graph state is in-memory** for the duration of `run`. There is no persistence, resume, or distributed execution; a crashed process re-runs the graph. Re-running is safe on the memory side because ingestion is idempotent. For durable execution, use a workflow engine (see Where this fits).
+- **The file-memory layer assumes one process** per memory directory. The orchestrator serializes its own writes; nothing arbitrates between processes.
+- **Screening is regex triage.** It catches lazy injection attempts, not determined ones, as covered above.
+- **Transport is your client's job.** Beyond one fallback-model retry in `run`, there are no retries, backoff, or rate limits; bring them in your LLM caller.
 
 ---
 
