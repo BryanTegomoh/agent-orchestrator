@@ -3,6 +3,37 @@
 Hands-on reference for agent-orchestrator. The [README](../README.md) covers the
 concepts; this guide covers wiring and each subsystem in turn.
 
+## At a glance
+
+```python
+from agent_orchestrator import Orchestrator, TaskGraph, run_goal
+
+orch = Orchestrator(primary_model="your/reasoning-model", memory_dir="./memory")
+orch.set_llm_caller(call_llm)                      # (prompt, model) -> str, any provider
+orch.register_agent("researcher", research_agent)  # (task, model) -> str
+orch.register_agent("writer", writer_agent)
+
+# Declare the work as a graph. Parents are set at creation, so a step
+# cannot reach a runnable state before its inputs exist.
+g = TaskGraph()
+cost = g.add("research: cost", "researcher", body="Estimate 3-year migration cost.")
+perf = g.add("research: latency", "researcher", body="Estimate p95 latency at scale.")
+memo = g.add("draft the memo", "writer", parents=[cost, perf])
+
+# cost and perf run concurrently; memo waits for both and receives their
+# outputs as context. Any failure raises, naming the failed and unreachable
+# tasks. A partial run never reads as success.
+outputs = orch.run_graph(g, max_workers=2)
+
+# Gate the result behind an independent judge before it ships. status is
+# "done" only if the judge accepts; a spent budget reports "exhausted".
+result = run_goal("Memo covers cost and latency.", reviser, judge, max_turns=5)
+```
+
+`python examples/full_pipeline.py` runs this exact shape end to end, with stub agents and no API keys.
+
+---
+
 ## Wiring an LLM provider
 
 ```python
