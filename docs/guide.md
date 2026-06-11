@@ -166,6 +166,50 @@ Acceptance is decided by an explicit judge, not by the worker's own say-so. Writ
 
 ---
 
+## Bounded autonomy
+
+An orchestrator should know exactly what it is allowed to do, stop at that boundary, and ask well. Three pieces implement this, built on familiar engineering doctrine: least privilege for the grants, completed staff work for the briefs, and an append-only audit log for the ledger.
+
+**Grants.** Tasks declare the permissions they need, and a run is scoped to the grants it was given. Grants are exact strings with no hierarchy, on purpose: `push` does not imply `merge`, and `merge` does not imply `release`.
+
+```python
+g = TaskGraph()
+deps = g.add("bump dependencies", "engineer", requires=["push"])
+rel = g.add("publish release", "engineer", parents=[deps], requires=["release"])
+
+g.run(execute, granted={"push"})
+# deps runs; rel parks as BLOCKED. After all runnable work finishes, run
+# raises OwnerDecisionRequired carrying one brief per parked task plus the
+# outputs of everything that completed. Nothing reads as success that wasn't.
+```
+
+**Owner parks.** An executor that reaches a judgment call only the owner can make (a product choice, an irreversible action, missing credentials) raises `NeedsOwner` with what changes, the proof gathered so far, a recommendation, and the exact choices. The task parks; independent lanes keep running. The owner decides from a prepared position, not from a vague status.
+
+```python
+def execute(task, parent_outputs):
+    if needs_product_call(task):
+        raise NeedsOwner(
+            what="The CLI flag could be --workers or --jobs; both are defensible.",
+            proof="Both spellings pass the test suite.",
+            recommendation="--workers, matching the library API.",
+            choices=("--workers", "--jobs"),
+        )
+    return do_work(task)
+```
+
+Resolve a grant park by re-running with broader grants; resolve an owner park with `g.unblock(task_id)` after applying the decision. Completed tasks are not re-run.
+
+**The ledger.** An append-only JSONL audit trail of lifecycle events: started, done, failed, blocked. It records what happened and survives a crash; it is an audit trail, not a checkpoint. Never write secrets into it.
+
+```python
+ledger = Ledger("./memory/run-ledger.jsonl")
+orch.run_graph(g, granted={"push"}, ledger=ledger)
+```
+
+`python examples/bounded_autonomy.py` runs the whole cycle: a scoped run that parks two tasks, the owner's decision, a resumed run, and the resulting ledger.
+
+---
+
 ## Model routing
 
 The `TaskRouter` classifies a task with keyword signals and returns a routing decision. No LLM call is involved, so routing runs in microseconds and is fully auditable.
