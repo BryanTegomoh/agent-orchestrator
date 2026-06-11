@@ -29,6 +29,9 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
+
+from .authority import DecisionBrief, NeedsOwner, missing_grants_brief
 
 
 class TaskState(Enum):
@@ -37,6 +40,7 @@ class TaskState(Enum):
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    BLOCKED = "blocked"   # parked on an owner decision; not a failure
 
 
 class TaskGraphError(Exception):
@@ -51,6 +55,23 @@ class SelfReportError(TaskGraphError):
     """A task reported creating child tasks that do not exist."""
 
 
+class OwnerDecisionRequired(TaskGraphError):
+    """
+    All runnable work finished, but tasks are parked on owner decisions.
+    Carries one DecisionBrief per parked task and the outputs of everything
+    that completed; resolve with grants or unblock(), then run again.
+    """
+
+    def __init__(self, briefs: list[DecisionBrief], outputs: dict[str, str]):
+        self.briefs = briefs
+        self.outputs = outputs
+        rendered = "\n".join(b.render() for b in briefs)
+        super().__init__(
+            f"{len(briefs)} task(s) await an owner decision:\n{rendered}\n"
+            "Resolve with broader grants or unblock(), then run the graph again."
+        )
+
+
 @dataclass
 class Task:
     id: str
@@ -59,9 +80,12 @@ class Task:
     body: str = ""
     parents: tuple[str, ...] = ()
     priority: int = 0
+    requires: tuple[str, ...] = ()      # grants this task needs to run
     state: TaskState = TaskState.PENDING
     result: str | None = None
     error: str | None = None
+    brief: DecisionBrief | None = None  # set when parked on an owner decision
+    blocked_on: tuple[str, ...] = ()    # missing grants; empty for executor parks
 
 
 # An executor turns a runnable task (plus its parents' outputs) into a result.
@@ -85,6 +109,7 @@ class TaskGraph:
         body: str = "",
         parents: Iterable[str] = (),
         priority: int = 0,
+        requires: Iterable[str] = (),
         task_id: str | None = None,
     ) -> str:
         """
@@ -110,6 +135,7 @@ class TaskGraph:
             body=body,
             parents=parent_ids,
             priority=priority,
+            requires=tuple(requires),
             state=TaskState.READY if not parent_ids else TaskState.PENDING,
         )
         return tid
@@ -156,6 +182,18 @@ class TaskGraph:
     def failed(self) -> list[Task]:
         return [t for t in self._tasks.values() if t.state is TaskState.FAILED]
 
+    def blocked(self) -> list[Task]:
+        return [t for t in self._tasks.values() if t.state is TaskState.BLOCKED]
+
+    def unblock(self, task_id: str) -> None:
+        """Owner override: return a parked task to the runnable pool."""
+        task = self._tasks[task_id]
+        if task.state is not TaskState.BLOCKED:
+            raise TaskGraphError(f"task {task_id!r} is {task.state.value}, not blocked")
+        task.brief = None
+        task.blocked_on = ()
+        task.state = TaskState.READY
+
     # ── State transitions ────────────────────────────────────────────────────
 
     def complete(self, task_id: str, result: str, *, created: Iterable[str] = ()) -> None:
@@ -190,7 +228,14 @@ class TaskGraph:
 
     # ── Execution ────────────────────────────────────────────────────────────
 
-    def run(self, executor: Executor, *, max_workers: int = 1) -> dict[str, str]:
+    def run(
+        self,
+        executor: Executor,
+        *,
+        max_workers: int = 1,
+        granted: Iterable[str] = (),
+        on_event: Callable[[str, Task], None] | None = None,
+    ) -> dict[str, str]:
         """
         Execute the graph in dependency order and return each task's output.
 
@@ -200,56 +245,111 @@ class TaskGraph:
         the executor must be thread-safe. Graph state is only mutated from the
         calling thread either way.
 
-        Execution is fail-loud: if any task fails (or is left unreachable
-        because an ancestor failed), this raises ``TaskGraphError`` instead of
-        returning a partial result.
+        ``granted`` is the set of permission grants for this run. A task whose
+        ``requires`` exceed the grants is parked as BLOCKED with a brief, and
+        independent lanes keep running; an executor may park a task the same
+        way by raising ``NeedsOwner``. Re-running with broader grants resumes
+        grant-parked tasks automatically; ``unblock()`` resumes the rest.
+
+        ``on_event`` receives (event, task) for task_started, task_done,
+        task_failed, and task_blocked, always from the calling thread.
+
+        The run never reads as more successful than it was: failures raise
+        ``TaskGraphError``; otherwise parked tasks raise
+        ``OwnerDecisionRequired`` carrying the briefs and completed outputs.
         """
         if max_workers < 1:
             raise ValueError("max_workers must be >= 1")
+        grants = frozenset(granted)
 
-        outputs: dict[str, str] = {}
+        def emit(event: str, task: Task) -> None:
+            if on_event is not None:
+                on_event(event, task)
+
+        def settle(task: Task, future_result: Callable[[], str]) -> None:
+            try:
+                result = future_result()
+            except NeedsOwner as ask:
+                self._park(task, ask.to_brief(task.id, task.title), missing=())
+                emit("task_blocked", task)
+                return
+            except Exception as exc:
+                self.fail(task.id, str(exc))
+                emit("task_failed", task)
+                return
+            self.complete(task.id, result)
+            emit("task_done", task)
+
+        # A re-run with broader grants resumes tasks parked only on grants.
+        for task in self.blocked():
+            if task.blocked_on and set(task.blocked_on) <= grants:
+                self.unblock(task.id)
+
         while True:
-            wave = self.ready()
+            wave = []
+            for task in self.ready():
+                missing = tuple(sorted(set(task.requires) - grants))
+                if missing:
+                    self._park(
+                        task,
+                        missing_grants_brief(task.id, task.title, missing),
+                        missing=missing,
+                    )
+                    emit("task_blocked", task)
+                else:
+                    wave.append(task)
             if not wave:
                 break
-            if max_workers == 1 or len(wave) == 1:
-                for task in wave:
-                    task.state = TaskState.RUNNING
-                    try:
-                        result = executor(task, self.parent_outputs(task.id))
-                    except Exception as exc:
-                        self.fail(task.id, str(exc))
-                        continue
-                    self.complete(task.id, result)
-                    outputs[task.id] = result
-                continue
 
             for task in wave:
                 task.state = TaskState.RUNNING
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures: dict[Future[str], Task] = {
-                    pool.submit(executor, task, self.parent_outputs(task.id)): task
-                    for task in wave
-                }
-                for future in as_completed(futures):
-                    task = futures[future]
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        self.fail(task.id, str(exc))
-                        continue
-                    self.complete(task.id, result)
-                    outputs[task.id] = result
+                emit("task_started", task)
 
+            if max_workers == 1 or len(wave) == 1:
+                for task in wave:
+                    settle(task, partial(executor, task, self.parent_outputs(task.id)))
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures: dict[Future[str], Task] = {
+                        pool.submit(executor, task, self.parent_outputs(task.id)): task
+                        for task in wave
+                    }
+                    for future in as_completed(futures):
+                        settle(futures[future], future.result)
+
+        return self._account()
+
+    # ── Run accounting ───────────────────────────────────────────────────────
+
+    def _park(self, task: Task, brief: DecisionBrief, missing: tuple[str, ...]) -> None:
+        task.brief = brief
+        task.blocked_on = missing
+        task.state = TaskState.BLOCKED
+
+    def _account(self) -> dict[str, str]:
+        """Final reckoning for run(): outputs, or a loud, accurate exception."""
         failed = self.failed()
-        unreachable = self.unfinished()
-        if failed or unreachable:
-            parts: list[str] = []
-            if failed:
-                parts.append(
-                    "failed: " + ", ".join(f"{t.id} ({t.error})" for t in failed)
-                )
-            if unreachable:
-                parts.append("unreachable: " + ", ".join(t.id for t in unreachable))
+        blocked = self.blocked()
+        pending = [t for t in self._tasks.values() if t.state is TaskState.PENDING]
+
+        if failed:
+            parts = ["failed: " + ", ".join(f"{t.id} ({t.error})" for t in failed)]
+            if blocked:
+                parts.append("blocked on owner: " + ", ".join(t.id for t in blocked))
+            if pending:
+                parts.append("unreachable: " + ", ".join(t.id for t in pending))
             raise TaskGraphError("; ".join(parts))
+
+        outputs = {
+            t.id: t.result
+            for t in self._tasks.values()
+            if t.state is TaskState.DONE and t.result is not None
+        }
+        if blocked:
+            raise OwnerDecisionRequired(
+                briefs=[t.brief for t in blocked if t.brief is not None],
+                outputs=outputs,
+            )
+        if pending:
+            raise TaskGraphError("unreachable: " + ", ".join(t.id for t in pending))
         return outputs

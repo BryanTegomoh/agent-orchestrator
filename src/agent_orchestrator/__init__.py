@@ -3,13 +3,16 @@ agent-orchestrator: a typed reference implementation of three multi-agent patter
 task-based model routing, two-layer persistent memory, and prompt-injection screening.
 """
 
+from .authority import DecisionBrief, NeedsOwner
 from .goal import GoalResult, Verdict, run_goal
+from .ledger import Ledger, LedgerEvent
 from .memory import MemoryManager
 from .orchestrator import Orchestrator
 from .router import TaskRouter, TaskType
 from .security import ContentFilter
 from .semantic_memory import EXTRACTION_PROMPT, MemoryFragment, RecallResult, SemanticMemory
 from .taskgraph import (
+    OwnerDecisionRequired,
     SelfReportError,
     Task,
     TaskGraph,
@@ -27,6 +30,12 @@ __all__ = [
     "TaskGraphError",
     "UnknownParentError",
     "SelfReportError",
+    # Bounded autonomy
+    "DecisionBrief",
+    "NeedsOwner",
+    "OwnerDecisionRequired",
+    "Ledger",
+    "LedgerEvent",
     # Goal loop
     "run_goal",
     "Verdict",
@@ -43,4 +52,4 @@ __all__ = [
     # Screening
     "ContentFilter",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

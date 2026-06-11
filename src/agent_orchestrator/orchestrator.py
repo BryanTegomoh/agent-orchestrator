@@ -21,9 +21,10 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+from .ledger import Ledger
 from .memory import MemoryManager
 from .router import RoutingDecision, TaskRouter, TaskType
 from .security import ContentFilter
@@ -174,7 +175,14 @@ class Orchestrator:
 
     # ── Graph execution ──────────────────────────────────────────────────────
 
-    def run_graph(self, graph: TaskGraph, *, max_workers: int = 1) -> dict[str, str]:
+    def run_graph(
+        self,
+        graph: TaskGraph,
+        *,
+        max_workers: int = 1,
+        granted: Iterable[str] = (),
+        ledger: Ledger | None = None,
+    ) -> dict[str, str]:
         """
         Execute a dependency-aware TaskGraph, delegating each task to its agent.
 
@@ -184,10 +192,26 @@ class Orchestrator:
         an unrunnable assignment is a bug, not a no-op. Execution inherits the
         graph's fail-loud contract, so a partial run never reads as success.
 
+        ``granted`` scopes what this run may do: tasks whose ``requires``
+        exceed the grants park on an owner decision while independent lanes
+        continue. ``ledger`` records task lifecycle events as an audit trail.
         max_workers > 1 runs independent tasks concurrently; your agents and
         LLM caller must be thread-safe.
         """
-        return graph.run(self._graph_executor, max_workers=max_workers)
+        on_event: Callable[[str, Task], None] | None = None
+        if ledger is not None:
+            led = ledger
+
+            def _record(event: str, task: Task) -> None:
+                led.record(event, task=task.id, detail=task.title)
+
+            on_event = _record
+        return graph.run(
+            self._graph_executor,
+            max_workers=max_workers,
+            granted=granted,
+            on_event=on_event,
+        )
 
     def _graph_executor(self, task: Task, parent_outputs: dict[str, str]) -> str:
         content = task.body or task.title
