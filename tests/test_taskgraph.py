@@ -1,10 +1,13 @@
 """Tests for the dependency-aware task graph."""
 
+import json
 import threading
+from typing import cast
 
 import pytest
 
 from agent_orchestrator.taskgraph import (
+    OwnerDecisionRequired,
     SelfReportError,
     TaskGraph,
     TaskGraphError,
@@ -155,3 +158,35 @@ def test_invalid_max_workers_raises():
     g.add("a", "worker")
     with pytest.raises(ValueError):
         g.run(lambda t, p: "x", max_workers=0)
+
+
+def test_snapshot_exports_json_safe_graph_state():
+    g = TaskGraph()
+    a = g.add("research", "researcher", body="gather facts", task_id="a")
+    b = g.add(
+        "publish",
+        "publisher",
+        parents=[a],
+        requires=["push"],
+        task_id="b",
+    )
+    g.complete(a, "facts")
+    with pytest.raises(OwnerDecisionRequired):
+        g.run(lambda task, parents: task.id)
+
+    snapshot = g.snapshot()
+    json.dumps(snapshot)  # no dataclasses, enums, or tuples leak out
+
+    states = cast(dict[str, str], snapshot["states"])
+    dependencies = cast(dict[str, list[str]], snapshot["dependencies"])
+    task_rows = cast(list[dict[str, object]], snapshot["tasks"])
+    briefs = cast(list[dict[str, object]], snapshot["briefs"])
+    tasks = {cast(str, task["id"]): task for task in task_rows}
+
+    assert states == {"a": "done", "b": "blocked"}
+    assert dependencies == {"a": [], "b": ["a"]}
+    assert tasks["a"]["result"] == "facts"
+    assert tasks["b"]["parents"] == ["a"]
+    assert tasks["b"]["requires"] == ["push"]
+    assert tasks["b"]["brief"] == briefs[0]
+    assert briefs[0]["task_id"] == b

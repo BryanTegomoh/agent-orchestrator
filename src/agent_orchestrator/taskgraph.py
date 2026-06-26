@@ -185,6 +185,45 @@ class TaskGraph:
     def blocked(self) -> list[Task]:
         return [t for t in self._tasks.values() if t.state is TaskState.BLOCKED]
 
+    def snapshot(self) -> dict[str, object]:
+        """
+        JSON-safe graph state for logs, dashboards, or external control planes.
+
+        This is an export surface, not a persistence or resume mechanism. The
+        graph still owns execution state in memory; callers that need durable
+        execution should use a workflow engine.
+        """
+        tasks = []
+        for task in self._tasks.values():
+            tasks.append(
+                {
+                    "id": task.id,
+                    "title": task.title,
+                    "assignee": task.assignee,
+                    "body": task.body,
+                    "parents": list(task.parents),
+                    "priority": task.priority,
+                    "requires": list(task.requires),
+                    "state": task.state.value,
+                    "result": task.result,
+                    "error": task.error,
+                    "brief": task.brief.to_dict() if task.brief is not None else None,
+                    "blocked_on": list(task.blocked_on),
+                }
+            )
+        return {
+            "tasks": tasks,
+            "states": {task.id: task.state.value for task in self._tasks.values()},
+            "dependencies": {
+                task.id: list(task.parents) for task in self._tasks.values()
+            },
+            "briefs": [
+                task.brief.to_dict()
+                for task in self.blocked()
+                if task.brief is not None
+            ],
+        }
+
     def unblock(self, task_id: str) -> None:
         """Owner override: return a parked task to the runnable pool."""
         task = self._tasks[task_id]

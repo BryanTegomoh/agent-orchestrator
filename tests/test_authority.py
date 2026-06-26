@@ -144,6 +144,29 @@ def test_brief_render_includes_choices():
     assert "Releases v2" in text
 
 
+def test_brief_to_dict_is_json_safe():
+    brief = DecisionBrief(
+        task_id="t1",
+        title="ship it",
+        what="Releases v2 to all users.",
+        why_now="CI is green.",
+        proof="73 tests passed.",
+        tradeoffs="Rollback is manual.",
+        recommendation="Ship.",
+        choices=("ship", "hold"),
+    )
+    assert brief.to_dict() == {
+        "task_id": "t1",
+        "title": "ship it",
+        "what": "Releases v2 to all users.",
+        "why_now": "CI is green.",
+        "proof": "73 tests passed.",
+        "tradeoffs": "Rollback is manual.",
+        "recommendation": "Ship.",
+        "choices": ["ship", "hold"],
+    }
+
+
 # ── Ledger ───────────────────────────────────────────────────────────────────
 
 

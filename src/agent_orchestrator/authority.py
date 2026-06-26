@@ -39,6 +39,19 @@ class DecisionBrief:
     recommendation: str = ""
     choices: tuple[str, ...] = ()  # the exact options on the table
 
+    def to_dict(self) -> dict[str, object]:
+        """Plain JSON-safe representation for control-plane handoff."""
+        return {
+            "task_id": self.task_id,
+            "title": self.title,
+            "what": self.what,
+            "why_now": self.why_now,
+            "proof": self.proof,
+            "tradeoffs": self.tradeoffs,
+            "recommendation": self.recommendation,
+            "choices": list(self.choices),
+        }
+
     def render(self) -> str:
         """One readable block per brief, for logs and reports."""
         lines = [f"[{self.task_id}] {self.title}", f"  what: {self.what}"]
