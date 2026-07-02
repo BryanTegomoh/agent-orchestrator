@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agent-orchestrator"
-version = "0.5.0"
+version = "0.6.0"
 description = "A typed reference implementation of multi-agent model routing, two-layer memory, and heuristic prompt-injection screening"
 readme = "README.md"
 license = { text = "MIT" }

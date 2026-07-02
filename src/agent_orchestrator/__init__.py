@@ -8,6 +8,7 @@ from .goal import GoalResult, Verdict, run_goal
 from .ledger import Ledger, LedgerEvent
 from .memory import MemoryManager
 from .orchestrator import Orchestrator
+from .panel import Opinion, PanelError, PanelResult, run_panel
 from .router import TaskRouter, TaskType
 from .security import ContentFilter
 from .semantic_memory import EXTRACTION_PROMPT, MemoryFragment, RecallResult, SemanticMemory
@@ -40,6 +41,11 @@ __all__ = [
     "run_goal",
     "Verdict",
     "GoalResult",
+    # Panel
+    "run_panel",
+    "Opinion",
+    "PanelResult",
+    "PanelError",
     # Routing
     "TaskRouter",
     "TaskType",
@@ -52,4 +58,4 @@ __all__ = [
     # Screening
     "ContentFilter",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

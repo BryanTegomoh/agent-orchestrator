@@ -166,6 +166,39 @@ Acceptance is decided by an explicit judge, not by the worker's own say-so. Writ
 
 ---
 
+## Peer panels
+
+For a high-stakes decision, `run_panel` puts the same question to several models independently and hands every answer to a synthesizer. Panelists never see each other's output; only the synthesizer sees them all. Blindness is the point: a panelist shown another's answer anchors on it, while independent answers diverge exactly where the question is genuinely hard.
+
+```python
+from agent_orchestrator import run_panel, Opinion
+
+def deep_reasoner(task: str) -> str:
+    return call_llm(task, model="your-reasoning-model")
+
+def peer_engineer(task: str) -> str:
+    return call_llm(task, model="a-different-vendor-model")   # uncorrelated failure modes
+
+def synthesizer(task: str, opinions: list[Opinion]) -> str:
+    views = "\n\n".join(f"[{o.panelist}]\n{o.output}" for o in opinions)
+    return call_llm(
+        f"Two independent engineers answered:\n\n{views}\n\n"
+        f"Synthesize the best of both for: {task}",
+        model="your-reasoning-model",
+    )
+
+result = run_panel(
+    "Should we split the monolith before or after the traffic migration?",
+    {"deep-reasoner": deep_reasoner, "peer-engineer": peer_engineer},
+    synthesizer,
+    max_workers=2,          # ask concurrently
+)
+```
+
+A panelist that raises is recorded as a failed `Opinion`, and if fewer panelists answer than the quorum requires (default: all of them), `run_panel` raises `PanelError` rather than synthesizing from thin evidence. Pick panelists for uncorrelated failure modes: two calls to the same model mostly buy redundancy, while models from different vendors buy perspective. Use `run_goal` to converge on a known standard; use a panel when no single model's blind spots should decide alone.
+
+---
+
 ## Bounded autonomy
 
 An orchestrator should know exactly what it is allowed to do, stop at that boundary, and ask well. Three pieces implement this, built on familiar engineering doctrine: least privilege for the grants, completed staff work for the briefs, and an append-only audit log for the ledger.

@@ -23,13 +23,14 @@ Most "agent frameworks" are a single model in a `while` loop. That shape fails i
 | An agent claims work it did not do | A self-report check rejects completion reports that reference tasks that do not exist |
 | Flat memory that forgets across sessions | Two layers: keyword recall for known categories, vector recall for semantic queries across sessions |
 | Untrusted input is treated as trusted | Screen external content before it reaches the model (as triage, not as a security boundary) |
+| One model's blind spots decide high-stakes calls alone | A panel: independent opinions from models with different failure modes, synthesized blind |
 | Autonomy is all-or-nothing | Permission grants and owner-decision gates: work stops at its authorized boundary with a decision-ready brief, while independent lanes continue |
 
 ---
 
 ## The looping model
 
-The shift this library is built for: instead of prompting an agent one step at a time, you define a loop and let it run to a goal. Two shapes, one primitive for each.
+The shift this library is built for: instead of prompting an agent one step at a time, you define a loop and let it run to a goal. Three shapes, one primitive for each.
 
 **Single-agent loop (`run_goal`).** One worker produces, a judge scores the result against the goal, and the loop repeats with the judge's feedback until the goal is met or the budget is spent. The rule that decides whether this works: the judge must be independent of the worker. A worker reviewing its own output tends to approve it; an independent judge, or a deterministic check such as a test suite or a type checker, keeps the loop honest.
 
@@ -68,6 +69,8 @@ The shift this library is built for: instead of prompting an agent one step at a
                   judge gate                   optional: run_goal on the result
 ```
 
+**Peer panel (`run_panel`).** For a high-stakes decision, the same question goes to several models independently and a synthesizer merges the answers. The rule that decides whether this works: panelists stay blind to each other. A panelist shown another's answer anchors on it and the panel converges on the first plausible take; kept blind, models with different failure modes (different vendors, different training data) diverge exactly where the question is genuinely hard, and that disagreement is the signal the synthesizer needs. Use a judge to converge on a known standard; use a panel when no single model's blind spots should decide alone.
+
 **Closed, not open.** An open loop explores an unbounded space: it can find things you did not specify, it spends heavily to do so, and against a loose standard it produces low-quality output at scale. A closed loop is bounded: a human designs the path, every step has a check, and the budget is predictable. This library is deliberately closed. The path is the `TaskGraph` you declare, the checks are the judge and the fail-loud invariants, and the loop ends in an explicit verdict either way.
 
 ---
@@ -80,13 +83,14 @@ For durable, distributed workflow execution, use a workflow engine such as Tempo
 
 ## The pieces
 
-Nine small modules, strict-typed, no required dependencies. The orchestrator's single-task pipeline is screen → recall → route → delegate → persist; `run_graph` applies it per task across a gated graph.
+Ten small modules, strict-typed, no required dependencies. The orchestrator's single-task pipeline is screen → recall → route → delegate → persist; `run_graph` applies it per task across a gated graph.
 
 | Module | Role |
 |--------|------|
 | [`taskgraph.py`](src/agent_orchestrator/taskgraph.py) | Dependency-gated DAG: parents declared at creation, ready waves, optional thread-pool execution, fail-loud invariants, self-report gate |
 | [`authority.py`](src/agent_orchestrator/authority.py) | Bounded autonomy: permission grants, owner parks, decision-ready briefs |
 | [`goal.py`](src/agent_orchestrator/goal.py) | Judge loop: worker, independent judge, feedback, explicit `done` or `exhausted` |
+| [`panel.py`](src/agent_orchestrator/panel.py) | Peer panel: blind independent opinions, quorum, one synthesizer that sees them all |
 | [`orchestrator.py`](src/agent_orchestrator/orchestrator.py) | Ties it together: screening, memory recall, routing, delegation, graph execution |
 | [`router.py`](src/agent_orchestrator/router.py) | Deterministic keyword classifier; task type to model, no model call |
 | [`memory.py`](src/agent_orchestrator/memory.py) | File memory: pointer index, topic files, rolling 7-day active context |
@@ -165,6 +169,7 @@ pip install -e ".[dev]"
 python examples/full_pipeline.py     # the closed loop end to end: parallel fleet + judge gate
 python examples/task_graph.py        # dependency-gated orchestration + fail-loud
 python examples/goal_loop.py         # judge loop; converges, then exhausts
+python examples/peer_panel.py        # blind peer opinions, synthesized together
 python examples/basic_routing.py     # task routing decisions
 python examples/security_screening.py
 python examples/memory_management.py # file memory and compaction
@@ -180,7 +185,7 @@ pytest                              # full suite
 pytest --cov=agent_orchestrator     # with coverage
 ```
 
-The suite covers routing, screening, the task graph (gating, parallel waves, fail-loud, self-report), the goal loop, orchestrator execution, file memory, and semantic memory (cosine scores, idempotent re-ingest). CI runs `ruff`, `mypy --strict`, and `pytest` on Python 3.11 and 3.12.
+The suite covers routing, screening, the task graph (gating, parallel waves, fail-loud, self-report), the goal loop, the panel (blind opinions, quorum), orchestrator execution, file memory, and semantic memory (cosine scores, idempotent re-ingest). CI runs `ruff`, `mypy --strict`, and `pytest` on Python 3.11 and 3.12.
 
 ---
 
